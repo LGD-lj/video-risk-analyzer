@@ -20,8 +20,24 @@ class Config:
 
     # ---------- 视频处理 ----------
     FRAME_INTERVAL_SECONDS: int = int(os.getenv("FRAME_INTERVAL_SECONDS", "5"))
+
+    # ---------- 分析模式：full(正式) | quick(快速测试) ----------
+    ANALYSIS_MODE: str = os.getenv("ANALYSIS_MODE", "full")
+    QUICK_FRAME_INTERVAL: int = int(os.getenv("QUICK_FRAME_INTERVAL", "15"))
+    QUICK_MAX_FRAMES: int = int(os.getenv("QUICK_MAX_FRAMES", "40"))
+
+    # ---------- 召回优先模式 ----------
+    RISK_RECALL_MODE: bool = os.getenv("RISK_RECALL_MODE", "true").lower() in ("true", "1", "yes")
+
+    # ---------- 候选池 ----------
+    MIN_RISK_SCORE: int = int(os.getenv("MIN_RISK_SCORE", "40"))  # 进入候选池的最低分
+    MAX_CANDIDATE_POOL: int = int(os.getenv("MAX_CANDIDATE_POOL", "60"))  # 候选池上限
+
+    # ---------- 风险去重 ----------
     DEDUP_INTERVAL_SECONDS: int = int(os.getenv("DEDUP_INTERVAL_SECONDS", "30"))
-    MIN_GAP_SECONDS: int = int(os.getenv("MIN_GAP_SECONDS", "30"))  # 风险点最小间隔
+    MIN_GAP_SECONDS: int = int(os.getenv("MIN_GAP_SECONDS", "20"))  # 同类型风险最小间隔
+
+    # ---------- 风险点数量 ----------
     MAX_RISK_POINTS: int = int(os.getenv("MAX_RISK_POINTS", "12"))
     MIN_RISK_POINTS: int = int(os.getenv("MIN_RISK_POINTS", "3"))
 

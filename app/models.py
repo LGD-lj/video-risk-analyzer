@@ -25,6 +25,16 @@ class RiskType(str, Enum):
     LOGISTICS_ZONE = "物流装卸区"
     DENSE_ENTRANCE = "出入口密集"
     ROAD_ABNORMAL = "路面异常"
+    TEMP_DIVERSION = "临时导流"
+    BRIDGE_TUNNEL = "桥洞"
+    CANOPY = "顶棚"
+    NARROW_MEETING = "会车空间不足"
+    GUARD_POST = "门岗"
+    GUARDRAIL = "护栏"
+    BARRIER = "隔离墩"
+    SIGHT_BLOCKED = "视线遮挡"
+    SHOP_ENTRANCE = "商铺门口"
+    SLOW_PASS = "车辆低速通过"
     OTHER = "其他"
 
 
@@ -83,6 +93,8 @@ class VisionResult(BaseModel):
     has_risk: bool
     risk_types: list[str] = []
     severity: str = ""  # "高" / "中" / "低"
+    risk_score: int = 0  # 0-100，运营风险评分
+    reason: str = ""  # 为什么对运营路线有影响
     description: str = ""
 
 

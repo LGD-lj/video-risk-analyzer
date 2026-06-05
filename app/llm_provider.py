@@ -22,10 +22,16 @@ class DeepSeekProvider:
         self.model = model
         self.is_mock = not api_key
 
+    def _mask_key(self) -> str:
+        """返回脱敏后的 Key 前缀，用于日志"""
+        if not self.api_key or len(self.api_key) < 8:
+            return "***"
+        return self.api_key[:7] + "***"
+
     def _chat(self, system_prompt: str, user_prompt: str, max_tokens: int = 2000) -> str:
-        """通用对话接口（Mock 模式下返回空）"""
+        """通用对话接口（Mock 模式下抛出异常，由调用方捕获）"""
         if self.is_mock:
-            raise RuntimeError("Mock mode: API Key 未配置")
+            raise RuntimeError("Mock mode: DeepSeek API Key 未配置")
 
         resp = requests.post(
             f"{self.base_url}/chat/completions",
@@ -63,14 +69,16 @@ class DeepSeekProvider:
                     r["description"] = f"[Mock] {r.get('description', '')}"
             return risks
 
-        system_prompt = """你是一个专业的行车记录视频风险分析报告撰写人。
-请对以下风险点描述进行润色，要求：
+        system_prompt = """你是一个道路运营风险分析报告撰写人，负责整理无人车路线巡检的风险点。
 
-1. 每条描述 20-50 字，简洁专业
-2. 包含具体场景和风险要素（位置、物体、动作）
-3. 对于高风险点，明确指出需要采取的措施
-4. 保持原文核心信息不变，补充场景细节使其更完整
+任务：
+1. **合并且合并**：相邻时间内完全相同的风险场景（如同一个施工围挡连续出现多帧）合并为一条，保留最清晰描述
+2. **润色描述**：每条30-80字，包含：画面现象 + 对通行/运营的影响 + 建议措施（低速通过/人工复核/绕行等）
+3. **不要删除**：不要因为风险"不严重"就删除——锥桶、窄路、路边停车等对运营路线都有实际影响
+4. **保留风险分数最高的版本**：合并时选 risk_score 最高的描述和分数
 5. 输出格式为 JSON 数组，每个元素包含 index 和 polished_description
+
+重要：你只负责润色描述和合并明显重复，**不要大量删除风险点**。最终保留 5-10 个有代表性的点即可。
 
 直接输出 JSON 数组，不要包含其他文字。"""
 
@@ -81,8 +89,10 @@ class DeepSeekProvider:
                 "index": i,
                 "time": r["timestamp_display"],
                 "severity": r["severity"],
+                "risk_score": r.get("risk_score", 0),
                 "types": r.get("risk_types", []),
                 "original": r.get("description", ""),
+                "reason": r.get("reason", ""),
             })
 
         user_prompt = json.dumps(input_items, ensure_ascii=False, indent=2)
@@ -98,8 +108,10 @@ class DeepSeekProvider:
                     risks[idx]["description"] = item.get("polished_description", risks[idx]["description"])
 
             return risks
-        except Exception:
-            # 润色失败，返回原文
+        except Exception as e:
+            err_msg = str(e)
+            clean_err = err_msg.replace(self.api_key, self._mask_key()) if self.api_key else err_msg
+            print(f"[LLM] 风险描述润色失败（将使用原文）: {clean_err[:120]}")
             return risks
 
     def generate_report_summary(self, video_info: dict, risks: list[dict]) -> str:

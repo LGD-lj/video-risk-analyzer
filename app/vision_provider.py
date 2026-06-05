@@ -89,37 +89,47 @@ class OpenAIVisionProvider(BaseVisionProvider):
 用户特别关注以下风险类型：{user_notes.strip()}
 请特别留意以上用户提到的内容，但同时也要自动识别其他明显风险，不要只限于用户关注的内容。"""
 
-        system_prompt = f"""你是一个行车记录仪视频风险分析专家。请仔细观察图片，判断是否存在驾驶风险。
+        system_prompt = f"""你是一个道路运营风险分析专家，专门为无人车路线规划、道路巡检交付评估运营风险。
 
-风险类型包括：
-- 施工：路面施工、围挡、施工标志
-- 锥桶：路锥、警示桶、隔离桩
-- 限高：限高杆、限高标志、低矮桥梁/隧道
-- 低净空：桥梁/隧道高度不足（注意判断是否对小车有限高影响）
-- 窄路：车道变窄、道路收窄
-- 闸口：收费站、检查站、出入口闸机
-- 非机动车：自行车、电动车、三轮车
-- 行人：行人横穿、路边行人
-- 停车占道：路边违章停车占用行车道
-- 货车遮挡：前方大货车遮挡视线
-- 物流装卸区：货车装卸货、物流园区作业区域
-- 出入口密集：多个出入口集中、车辆频繁交汇
-- 路面异常：坑洼、积水、碎石、路面破损
+你的任务是：识别画面中所有可能影响车辆通行、路线运营、测试验收的场景。
+**不需要发生事故才标记**——只要存在需要关注、减速、绕行、人工复核的情况，就应该标记。
+
+必须重点识别以下风险类型（按优先级排列）：
+施工围挡、修路、锥桶、临时导流 → 影响：通行受阻、需要变道或绕行
+限高、桥洞、低净空、顶棚 → 影响：高度受限，大型车辆无法通过
+窄路、会车空间不足 → 影响：通行宽度不足，需要减速或停车让行
+闸口、门岗、护栏、隔离墩 → 影响：通行受控，需要停车检查或登记
+非机动车混行、行人横穿 → 影响：需要减速、避让，增加碰撞风险
+路边停车占道 → 影响：车道变窄，通行空间受限
+大货车、工程车遮挡 → 影响：视线受阻，无法判断前方路况
+商铺门口、小路口、出入口密集 → 影响：车辆行人频繁交汇，需要降速
+物流装卸区 → 影响：作业车辆进出，通行中断
+视线遮挡 → 影响：无法观察前方路况，存在盲区
+路面异常（坑洼、积水、碎石、破损）→ 影响：需要降速通过，可能损伤车辆
 {user_notes_section}
 请严格按以下 JSON 格式返回（不要包含其他文字）：
 {{
   "has_risk": true,
   "risk_types": ["施工", "锥桶"],
   "severity": "高",
-  "description": "道路右侧存在施工围挡和锥桶，通行空间变窄，建议低速通过并人工复核。"
+  "risk_score": 85,
+  "description": "道路右侧存在施工围挡和锥桶，通行空间变窄约1/3，需低速靠左通过并建议人工到现场确认绕行路线。",
+  "reason": "施工围挡压缩行车道，无人车无法自动判断临时导流路线，需人工介入规划绕行。"
 }}
 
-判断标准：
-- 高：直接威胁行车安全，需立即采取措施（如前方施工占道、行人突然横穿）
-- 中：存在潜在风险，需注意观察（如路边锥桶、远处非机动车）
-- 低：一般注意即可（如远处行人、路边停车）
-- 如果画面正常无风险，has_risk 为 false，risk_types 为空数组，severity 为空字符串，description 为"无风险"
-- 如果有风险，description 应包含场景细节和建议措施（20-60字），不要只写标签
+评分指南（risk_score 0-100）：
+- 施工、低净空、限高、闸口极窄、明显占道阻塞：80-100
+- 锥桶、窄路、非机动车混行、停车占道、货车遮挡、临时导流：60-85
+- 出入口密集、轻微遮挡、复杂混行、路面异常、商铺门口：40-70
+- 画面正常无任何运营风险：has_risk=false, risk_score=0
+
+重要规则：
+1. **宽松判定**：只要对运营路线有影响的场景，has_risk 必须为 true，risk_score >= 40
+2. **不要遗漏**：锥桶、施工围挡、窄路、闸口、路边停车、非机动车，这些即使看起来"不严重"也必须标记
+3. **批量巡检思维**：你不是在看一次事故，而是在做道路巡检——标记所有需要关注的点
+4. **description** 要包含：画面现象 + 对通行的影响 + 建议措施（30-80字）
+5. **reason** 要解释：为什么这个场景对运营路线/无人车通行有影响（20-50字）
+6. 如果确实没有任何风险（如空旷的高速公路），才返回 has_risk=false
 """
 
         for attempt in range(self.max_retries):
@@ -158,12 +168,19 @@ class OpenAIVisionProvider(BaseVisionProvider):
 
                 # 尝试提取 JSON
                 result = self._parse_response(content)
+                has_risk = result.get("has_risk", False)
+                risk_score = int(result.get("risk_score", 0))
+                # 如果 has_risk=true 但 risk_score 太低，仍保留（模型可能忘记填 risk_score）
+                if has_risk and risk_score <= 0:
+                    risk_score = 50
                 return VisionResult(
                     frame_index=frame_index,
                     timestamp_seconds=timestamp_seconds,
-                    has_risk=result.get("has_risk", False),
+                    has_risk=has_risk,
                     risk_types=result.get("risk_types", []),
                     severity=result.get("severity", ""),
+                    risk_score=risk_score,
+                    reason=result.get("reason", ""),
                     description=result.get("description", ""),
                 )
 
@@ -180,6 +197,8 @@ class OpenAIVisionProvider(BaseVisionProvider):
                         has_risk=False,
                         risk_types=[],
                         severity="",
+                        risk_score=0,
+                        reason="",
                         description="",
                     )
                 continue
@@ -248,6 +267,8 @@ class MockVisionProvider(BaseVisionProvider):
                 has_risk=False,
                 risk_types=[],
                 severity="",
+                risk_score=0,
+                reason="",
                 description="画面正常，未发现明显风险",
             )
 
@@ -261,6 +282,8 @@ class MockVisionProvider(BaseVisionProvider):
             has_risk=True,
             risk_types=scenario["risk_types"],
             severity=scenario["severity"],
+            risk_score=60 + (seed_int % 35),  # Mock: 60-95
+            reason=f"Mock: 检测到{scenario['risk_types'][0]}场景，影响无人车通行",
             description=scenario["description"],
         )
 

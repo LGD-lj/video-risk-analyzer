@@ -425,37 +425,31 @@ async def serve_index():
 
 @app.on_event("startup")
 async def startup_cleanup():
-    """启动时清理过期任务"""
+    """启动时清理过期任务并输出配置状态"""
+    vision_ok = config.has_vision_key()
+    deepseek_ok = config.has_deepseek_key()
     mock_mode = config.get_mock_mode()
-    missing = config.get_missing_keys()
+
+    print("=" * 50)
+    print("  视频风险点分析系统 v2")
+    print("=" * 50)
+    print(f"  Vision Key   : {'已配置' if vision_ok else '未配置'}")
+    print(f"  DeepSeek Key : {'已配置' if deepseek_ok else '未配置'}")
+    print(f"  运行模式     : {'Mock 模拟' if mock_mode else '真实 AI 分析'}")
     if mock_mode:
-        print(f"[MOCK] WARNING: Mock mode active (missing: {', '.join(missing)})")
-        print(f"[MOCK]     Results are simulated data for testing only")
-    else:
-        print(f"[INFO] 所有 API Key 已配置，正式模式运行中")
+        print(f"  提示: 在 .env 中配置 API Key 后重启即可启用真实 AI")
+    print("=" * 50)
 
     count = cleanup_old_jobs(config.DATA_DIR, config.CLEANUP_HOURS, config.FAILED_JOB_RETENTION_HOURS)
     if count > 0:
-        print(f"[CLEANUP] 启动时清理了 {count} 个过期任务目录")
+        print(f"[CLEANUP] 清理了 {count} 个过期任务目录")
 
 
 # ==================== 入口 ====================
 
 if __name__ == "__main__":
     import uvicorn
-    mock_mode = config.get_mock_mode()
-    if mock_mode:
-        print("=" * 60)
-        print("  [WARN] Mock mode active")
-        print(f"  Missing: {', '.join(config.get_missing_keys())}")
-        print("  Results are simulated data for testing only")
-        print("  Configure API keys in .env and restart for real AI analysis")
-        print("=" * 60)
-    else:
-        print("=" * 60)
-        print("  All API keys configured, production mode")
-        print("=" * 60)
-
+    print("Starting server...")
     uvicorn.run(
         "app.main:app",
         host=config.HOST,
