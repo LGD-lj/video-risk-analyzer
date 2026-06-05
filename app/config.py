@@ -21,14 +21,15 @@ class Config:
     # ---------- 视频处理 ----------
     FRAME_INTERVAL_SECONDS: int = int(os.getenv("FRAME_INTERVAL_SECONDS", "5"))
     DEDUP_INTERVAL_SECONDS: int = int(os.getenv("DEDUP_INTERVAL_SECONDS", "30"))
+    MIN_GAP_SECONDS: int = int(os.getenv("MIN_GAP_SECONDS", "30"))  # 风险点最小间隔
     MAX_RISK_POINTS: int = int(os.getenv("MAX_RISK_POINTS", "12"))
     MIN_RISK_POINTS: int = int(os.getenv("MIN_RISK_POINTS", "3"))
 
     # ---------- 视觉模型配置（可替换 provider）----------
-    VISION_PROVIDER: str = os.getenv("VISION_PROVIDER", "openai")  # openai | custom
+    VISION_PROVIDER: str = os.getenv("VISION_PROVIDER", "dashscope")  # openai | dashscope
     VISION_API_KEY: str = os.getenv("VISION_API_KEY", "")
-    VISION_BASE_URL: str = os.getenv("VISION_BASE_URL", "https://api.openai.com/v1")
-    VISION_MODEL: str = os.getenv("VISION_MODEL", "gpt-4o")
+    VISION_BASE_URL: str = os.getenv("VISION_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    VISION_MODEL: str = os.getenv("VISION_MODEL", "qwen-vl-plus")
 
     # ---------- DeepSeek 文本模型 ----------
     DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
@@ -36,17 +37,27 @@ class Config:
     DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
     @classmethod
+    def has_vision_key(cls) -> bool:
+        """视觉模型 Key 是否已配置"""
+        return bool(cls.VISION_API_KEY and cls.VISION_API_KEY.strip())
+
+    @classmethod
+    def has_deepseek_key(cls) -> bool:
+        """DeepSeek Key 是否已配置"""
+        return bool(cls.DEEPSEEK_API_KEY and cls.DEEPSEEK_API_KEY.strip())
+
+    @classmethod
     def get_mock_mode(cls) -> bool:
-        """检测是否处于 Mock 模式（API Key 未配置时自动进入）"""
-        return not cls.VISION_API_KEY or not cls.DEEPSEEK_API_KEY
+        """检测是否处于 Mock 模式（任一 Key 缺失即为 Mock）"""
+        return not cls.has_vision_key() or not cls.has_deepseek_key()
 
     @classmethod
     def get_missing_keys(cls) -> list[str]:
         """返回缺失的 API Key 列表"""
         missing = []
-        if not cls.VISION_API_KEY:
+        if not cls.has_vision_key():
             missing.append("VISION_API_KEY")
-        if not cls.DEEPSEEK_API_KEY:
+        if not cls.has_deepseek_key():
             missing.append("DEEPSEEK_API_KEY")
         return missing
 

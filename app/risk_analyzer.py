@@ -115,6 +115,9 @@ def _parse_risk_type(risk_type_str: str) -> RiskType:
         "货车遮挡": RiskType.TRUCK_BLOCK,
         "停车占道": RiskType.PARKING_OCCUPY,
         "低净空": RiskType.LOW_CLEARANCE,
+        "物流装卸区": RiskType.LOGISTICS_ZONE,
+        "出入口密集": RiskType.DENSE_ENTRANCE,
+        "路面异常": RiskType.ROAD_ABNORMAL,
     }
     return mapping.get(risk_type_str, RiskType.OTHER)
 
@@ -253,9 +256,9 @@ def run_analysis(
     update_progress("生成报告中", 92, "保存分析结果")
     try:
         risk_points_json = []
-        for rp in risk_points:
+        for idx, rp in enumerate(risk_points):
             risk_points_json.append({
-                "index": i + 1,
+                "index": idx + 1,
                 "timestamp_seconds": rp.timestamp_seconds,
                 "timestamp_display": rp.timestamp_display,
                 "severity": rp.severity.value if hasattr(rp.severity, 'value') else rp.severity,

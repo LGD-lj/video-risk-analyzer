@@ -1,14 +1,17 @@
-# 🎬 视频风险点分析系统 V1
+# 🎬 视频风险点分析系统 V2
 
 上传行车记录视频，AI 自动识别驾驶风险点，生成 Word 报告和截图。
 
 ## 功能概览
 
 - 📤 **网页上传** — 支持 MP4/MOV/AVI/MKV/WebM，最大 2GB
+- 📝 **额外关注** — 可填写重点关注的风险类型，AI 会重点留意但不局限于此
+- ⏱️ **预计时间** — 上传后自动估算处理耗时
+- 📊 **实时进度** — 6 阶段进度条 + 百分比 + 预计剩余时间
 - 🔍 **智能识别** — 视觉模型逐帧分析，检测 10 种驾驶风险类型
 - 📊 **Word 报告** — 自动生成包含截图、风险等级、描述的完整报告
 - 📦 **截图打包** — 所有风险点截图一键下载 ZIP
-- 🧹 **自动清理** — 超过 24 小时的上传文件和临时数据自动删除
+- 🧹 **自动清理** — 完成后自动删除原始视频和临时帧，24 小时后清理全部任务数据
 
 ### 支持的风险类型
 
@@ -102,27 +105,27 @@ http://127.0.0.1:8000
 ## 处理流程
 
 ```
-用户上传视频
+用户上传视频 + 可选额外关注内容
     ↓
-ffprobe 读取视频信息（分辨率、帧率、时长）
+ffprobe 读取视频信息（分辨率、帧率、时长）→ 预估处理时间
     ↓
-OpenCV 每隔 5 秒抽一帧（可配置）
+OpenCV 每隔 N 秒抽一帧（可配置 FRAME_INTERVAL_SECONDS）
     ↓
 视觉模型逐帧分析 → 返回 JSON（has_risk, risk_types, severity, description）
+  ├─ 未配置 Key：自动使用 Mock 模式
+  └─ 调用失败：跳过该帧，不阻塞任务
     ↓
-风险去重（30 秒内同类风险合并）
+风险去重 + 筛选（灵活数量，最多 12 个）
     ↓
-按严重程度筛选 5-10 个最终风险点
+保存风险点截图 + risk_points.json
     ↓
-保存风险点截图
-    ↓
-DeepSeek 统一润色描述
+DeepSeek 统一润色描述（未配置 Key 则保留原文）
     ↓
 python-docx 生成 Word 报告
     ↓
 打包 screenshots.zip
     ↓
-网页显示下载链接
+自动清理原始视频和临时帧 → 网页显示下载链接
 ```
 
 ## 项目结构
@@ -141,11 +144,10 @@ video-risk-analyzer/
 │   └── cleanup.py           # 24 小时自动清理
 ├── web/
 │   └── index.html           # 前端上传页面
-├── data/jobs/               # 任务数据目录（自动创建）
+├── data/jobs/               # 任务数据目录（自动创建，完成后仅保留结果文件）
 │   └── {job_id}/
-│       ├── video.mp4        # 上传的视频
-│       ├── frames/          # 抽取的帧
 │       ├── screenshots/     # 风险点截图
+│       ├── risk_points.json # 风险点结构化数据
 │       ├── 风险分析报告.docx
 │       └── screenshots.zip
 ├── requirements.txt
@@ -174,30 +176,34 @@ video-risk-analyzer/
 |--------|--------|------|
 | `FRAME_INTERVAL_SECONDS` | 5 | 抽帧间隔（秒），越小分析越细致但越慢 |
 | `DEDUP_INTERVAL_SECONDS` | 30 | 风险去重最小间隔（秒） |
-| `MAX_RISK_POINTS` | 10 | 最终报告中最多风险点数量 |
-| `MIN_RISK_POINTS` | 5 | 最终报告中至少风险点数量 |
-| `CLEANUP_HOURS` | 24 | 自动清理超过多少小时的任务数据 |
+| `MIN_GAP_SECONDS` | 30 | 风险点之间最小时间间隔（秒） |
+| `MAX_RISK_POINTS` | 12 | 最终报告中最多风险点数量 |
+| `MIN_RISK_POINTS` | 3 | 风险很少时允许的最少风险点数量 |
+| `CLEANUP_HOURS` | 24 | 成功任务数据保留小时数 |
+| `FAILED_JOB_RETENTION_HOURS` | 1 | 失败任务数据保留小时数 |
 | `MAX_UPLOAD_SIZE_MB` | 2000 | 最大上传文件大小（MB） |
 
 ## 替换视觉模型
 
-如需使用其他视觉模型（如 DeepSeek VL、通义千问 VL），只需修改 `.env`：
+默认使用**阿里云百炼 DashScope**（`qwen-vl-plus`），兼容 OpenAI Chat Completions 格式。
+
+如需使用其他模型，只需修改 `.env`：
 
 ```ini
-# 示例：使用 DeepSeek 视觉模型
+# 示例：使用 OpenAI GPT-4o
 VISION_PROVIDER=openai
+VISION_API_KEY=sk-your-openai-key
+VISION_BASE_URL=https://api.openai.com/v1
+VISION_MODEL=gpt-4o
+
+# 示例：使用 DeepSeek 视觉模型
+VISION_PROVIDER=dashscope
 VISION_API_KEY=sk-your-deepseek-key
 VISION_BASE_URL=https://api.deepseek.com
 VISION_MODEL=deepseek-chat
-
-# 示例：使用阿里通义千问 VL
-VISION_PROVIDER=openai
-VISION_API_KEY=sk-your-qwen-key
-VISION_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-VISION_MODEL=qwen-vl-max
 ```
 
-只要目标 API 兼容 OpenAI Chat Completions 格式，都可以直接使用。
+> 💡 `VISION_PROVIDER=openai` 和 `VISION_PROVIDER=dashscope` 使用相同的 OpenAI 兼容接口，只需改 `VISION_BASE_URL` 和 `VISION_MODEL` 即可切换。
 
 ## 常见问题
 

@@ -22,6 +22,9 @@ class RiskType(str, Enum):
     TRUCK_BLOCK = "货车遮挡"
     PARKING_OCCUPY = "停车占道"
     LOW_CLEARANCE = "低净空"
+    LOGISTICS_ZONE = "物流装卸区"
+    DENSE_ENTRANCE = "出入口密集"
+    ROAD_ABNORMAL = "路面异常"
     OTHER = "其他"
 
 

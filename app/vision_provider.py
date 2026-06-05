@@ -65,6 +65,12 @@ class OpenAIVisionProvider(BaseVisionProvider):
         self.model = model
         self.max_retries = max_retries
 
+    def _mask_key(self) -> str:
+        """返回脱敏后的 Key 前缀，用于日志"""
+        if not self.api_key or len(self.api_key) < 8:
+            return "***"
+        return self.api_key[:7] + "***"
+
     def analyze_frame(
         self,
         image_path: str,
@@ -87,22 +93,25 @@ class OpenAIVisionProvider(BaseVisionProvider):
 
 风险类型包括：
 - 施工：路面施工、围挡、施工标志
-- 限高：限高杆、限高标志、低矮桥梁/隧道
 - 锥桶：路锥、警示桶、隔离桩
+- 限高：限高杆、限高标志、低矮桥梁/隧道
+- 低净空：桥梁/隧道高度不足（注意判断是否对小车有限高影响）
 - 窄路：车道变窄、道路收窄
 - 闸口：收费站、检查站、出入口闸机
-- 行人：行人横穿、路边行人
 - 非机动车：自行车、电动车、三轮车
-- 货车遮挡：前方大货车遮挡视线
+- 行人：行人横穿、路边行人
 - 停车占道：路边违章停车占用行车道
-- 低净空：桥梁/隧道高度不足（注意判断是否对小车有限高影响）
+- 货车遮挡：前方大货车遮挡视线
+- 物流装卸区：货车装卸货、物流园区作业区域
+- 出入口密集：多个出入口集中、车辆频繁交汇
+- 路面异常：坑洼、积水、碎石、路面破损
 {user_notes_section}
 请严格按以下 JSON 格式返回（不要包含其他文字）：
 {{
-  "has_risk": true/false,
-  "risk_types": ["施工", "限高"],
-  "severity": "高" 或 "中" 或 "低",
-  "description": "简要描述看到的场景和风险（20字以内）"
+  "has_risk": true,
+  "risk_types": ["施工", "锥桶"],
+  "severity": "高",
+  "description": "道路右侧存在施工围挡和锥桶，通行空间变窄，建议低速通过并人工复核。"
 }}
 
 判断标准：
@@ -110,6 +119,7 @@ class OpenAIVisionProvider(BaseVisionProvider):
 - 中：存在潜在风险，需注意观察（如路边锥桶、远处非机动车）
 - 低：一般注意即可（如远处行人、路边停车）
 - 如果画面正常无风险，has_risk 为 false，risk_types 为空数组，severity 为空字符串，description 为"无风险"
+- 如果有风险，description 应包含场景细节和建议措施（20-60字），不要只写标签
 """
 
         for attempt in range(self.max_retries):
@@ -158,15 +168,19 @@ class OpenAIVisionProvider(BaseVisionProvider):
                 )
 
             except Exception as e:
+                err_msg = str(e)
+                # 确保错误消息不含 Key
+                clean_err = err_msg.replace(self.api_key, self._mask_key()) if self.api_key else err_msg
                 if attempt == self.max_retries - 1:
-                    # 最后一次尝试失败，返回无风险
+                    print(f"[VISION] 帧 {frame_index} 分析失败（已重试 {self.max_retries} 次）: {clean_err[:120]}")
+                    # 降级：跳过该帧，不阻塞整个任务
                     return VisionResult(
                         frame_index=frame_index,
                         timestamp_seconds=timestamp_seconds,
                         has_risk=False,
                         risk_types=[],
                         severity="",
-                        description=f"分析失败: {str(e)[:50]}",
+                        description="",
                     )
                 continue
 
@@ -260,18 +274,18 @@ def create_vision_provider(
     """工厂函数 —— 根据配置创建视觉模型实例
 
     当 API Key 为空时自动返回 MockVisionProvider。
+    支持 provider_type: openai | dashscope
     """
     if not api_key:
+        print("[VISION] API Key 未配置，使用 MockVisionProvider")
         return MockVisionProvider()
 
-    if provider_type == "openai":
+    if provider_type in ("openai", "dashscope"):
+        # DashScope 兼容 OpenAI Chat Completions 格式，可直接复用
         return OpenAIVisionProvider(
             api_key=api_key,
             base_url=base_url,
             model=model,
         )
-    # 后续可添加其他 provider
-    # elif provider_type == "qwen":
-    #     return QwenVisionProvider(...)
     else:
         raise ValueError(f"不支持的视觉模型 provider: {provider_type}")
