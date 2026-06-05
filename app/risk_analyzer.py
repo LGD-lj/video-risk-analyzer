@@ -36,75 +36,171 @@ def _severity_rank(severity: str) -> int:
     return mapping.get(severity, 0)
 
 
+# ---------- 风险分类 ----------
+_RISK_CLASS_A = {  # 强风险，优先保留
+    "施工", "限高", "锥桶", "临时导流", "低净空", "桥洞", "顶棚",
+    "闸口", "门岗", "隔离墩", "护栏", "货车遮挡", "路面异常", "车辆低速通过",
+}
+_RISK_CLASS_B = {  # 中风险，适量保留
+    "非机动车", "行人", "停车占道", "窄路", "出入口密集", "商铺门口", "视线遮挡",
+    "物流装卸区", "会车空间不足",
+}
+# 不在 A/B 中的类型为 C 类弱风险
+
+# 每类去重间隔：强风险更短（保留更多），弱风险更长（更激进去重）
+_GAP_A = 25   # A 类：25 秒
+_GAP_B = 45   # B 类：45 秒
+_GAP_C = 60   # C 类：60 秒
+
+# 每类最终输出上限
+_MAX_A = 8    # A 类最多 8 个（不受限但也要去重）
+_MAX_B = 4    # B 类最多 4 个
+_MAX_C = 1    # C 类最多 1 个
+
+# B 类子类别上限
+_MAX_NON_MOTOR = 3     # 非机动车最多 3 个
+_MAX_TREE_BLOCK = 1    # 树木遮挡最多 1 个
+_MAX_PARKING = 3       # 停车占道最多 3 个
+_MAX_SHOP = 1          # 商铺门口最多 1 个
+
+
+def _risk_class(r: "VisionResult") -> str:
+    """判断风险所属类别"""
+    types = set(r.risk_types) if r.risk_types else set()
+    if types & _RISK_CLASS_A:
+        return "A"
+    if types & _RISK_CLASS_B:
+        return "B"
+    return "C"
+
+
+def _get_gap(r: "VisionResult") -> int:
+    """获取该风险点的去重间隔"""
+    cls = _risk_class(r)
+    if cls == "A":
+        return _GAP_A
+    if cls == "B":
+        return _GAP_B
+    return _GAP_C
+
+
 def _deduplicate_risks(
-    results: list[VisionResult],
+    results: list["VisionResult"],
     min_gap_seconds: int = 30,
-) -> list[VisionResult]:
-    """类型感知去重：
-    - 对每个已保留的帧，检查新帧的类型重叠率
-    - 重叠 >= 50% 且时间间隔 < min_gap_seconds → 视为重复，跳过
-    - 重叠 < 50% 或时间间隔足够 → 保留
+) -> list["VisionResult"]:
+    """分类感知去重：
+    - 强风险(A类)：较小间隔(25s)，保留更多
+    - 中风险(B类)：中等间隔(45s)
+    - 弱风险(C类)：较大间隔(60s)，激进去重
+    - 重叠 >= 50% 且时间 < 该类间隔 → 重复
     """
     if not results:
         return []
 
-    # 按 risk_score 降序排列（高分优先保留）
     sorted_results = sorted(results, key=lambda r: r.risk_score, reverse=True)
-
-    kept: list[VisionResult] = []
+    kept: list["VisionResult"] = []
 
     for r in sorted_results:
         is_duplicate = False
         r_types = set(r.risk_types) if r.risk_types else set()
+        gap = _get_gap(r)
 
         for k in kept:
             k_types = set(k.risk_types) if k.risk_types else set()
             if not r_types or not k_types:
                 continue
-
-            # 计算类型重叠率
             overlap = len(r_types & k_types)
             min_len = min(len(r_types), len(k_types))
             overlap_ratio = overlap / min_len if min_len > 0 else 0
-
-            # 时间间隔
             time_gap = abs(r.timestamp_seconds - k.timestamp_seconds)
 
-            # 类型重叠 >= 50% 且时间 < min_gap_seconds → 重复
-            if overlap_ratio >= 0.5 and time_gap < min_gap_seconds:
+            if overlap_ratio >= 0.5 and time_gap < gap:
                 is_duplicate = True
                 break
 
         if not is_duplicate:
             kept.append(r)
 
-    # 最终按时间排序输出
     kept.sort(key=lambda r: r.timestamp_seconds)
     return kept
 
 
 def _select_top_risks(
-    results: list[VisionResult],
+    results: list["VisionResult"],
     max_count: int = 12,
-) -> list[VisionResult]:
-    """按 risk_score 排序筛选最终风险点
-
-    原则：
-    - risk_score 优先（高分的更有代表性）
-    - 上限 max_count 个
-    - 风险少时少于目标数量也可以
+) -> list["VisionResult"]:
+    """分类感知筛选：
+    - A类(强风险)优先，不设硬上限但去重
+    - B类(中风险)每子类有上限
+    - C类(弱风险)最多 1 个
+    - 总分上限 max_count
     """
     if not results:
         return []
 
-    # 按 risk_score 降序，同分按时间
-    sorted_results = sorted(
-        results,
-        key=lambda r: (r.risk_score, -r.timestamp_seconds),
-        reverse=True,
-    )
+    # 按 risk_score 降序
+    sorted_results = sorted(results, key=lambda r: r.risk_score, reverse=True)
 
-    return sorted_results[:max_count]
+    selected: list["VisionResult"] = []
+    # 子类计数器
+    count_non_motor = 0
+    count_tree = 0
+    count_parking = 0
+    count_shop = 0
+    count_c = 0
+
+    for r in sorted_results:
+        cls = _risk_class(r)
+        types = set(r.risk_types) if r.risk_types else set()
+
+        # A 类点不受 B/C 上限限制（如施工+非机动车，仍应保留）
+        if cls == "A" and len(selected) < max_count:
+            selected.append(r)
+            # 仍然递增 B 类计数器（让后续纯 B 类点受限制）
+            if "非机动车" in types:
+                count_non_motor += 1
+            if any("树" in t for t in types):
+                count_tree += 1
+            if "停车占道" in types:
+                count_parking += 1
+            if "商铺门口" in types:
+                count_shop += 1
+            continue
+
+        # B/C 类点：检查所有子类上限
+        would_block = False
+        if cls == "C" and count_c >= _MAX_C:
+            would_block = True
+        if "非机动车" in types and count_non_motor >= _MAX_NON_MOTOR:
+            would_block = True
+        if any("树" in t for t in types) and count_tree >= _MAX_TREE_BLOCK:
+            would_block = True
+        if "停车占道" in types and count_parking >= _MAX_PARKING:
+            would_block = True
+        if "商铺门口" in types and count_shop >= _MAX_SHOP:
+            would_block = True
+
+        if would_block:
+            continue
+
+        selected.append(r)
+        if cls == "C":
+            count_c += 1
+        if "非机动车" in types:
+            count_non_motor += 1
+        if any("树" in t for t in types):
+            count_tree += 1
+        if "停车占道" in types:
+            count_parking += 1
+        if "商铺门口" in types:
+            count_shop += 1
+
+        # 总分上限
+        if len(selected) >= max_count:
+            break
+
+    selected.sort(key=lambda r: r.timestamp_seconds)
+    return selected
 
 
 def _parse_risk_type(risk_type_str: str) -> RiskType:
@@ -185,7 +281,6 @@ def run_analysis(
 
     risk_results: list[VisionResult] = []
     all_results: list[dict] = []  # 保存所有帧的完整结果用于调试
-    min_score = config.MIN_RISK_SCORE if config.RISK_RECALL_MODE else 50
 
     for i, frame in enumerate(frames):
         pct = 10 + int((i / max(total_frames, 1)) * 60)  # 10% → 70%
@@ -213,9 +308,18 @@ def run_analysis(
             "severity": result.severity,
             "description": result.description[:80],
             "reason": getattr(result, 'reason', ''),
+            "long_term_risk": getattr(result, 'long_term_risk', False),
+            "long_term_reason": getattr(result, 'long_term_reason', ''),
         })
-        # 候选池：保留 risk_score >= MIN_RISK_SCORE 的所有帧
-        if result.has_risk and result.risk_score >= min_score:
+        # 候选池：按分类使用不同门槛
+        r_cls = _risk_class(result)
+        if r_cls == "A":
+            threshold = 40  # 强风险：>=40 就进池
+        elif r_cls == "B":
+            threshold = 50  # 中风险：>=50
+        else:
+            threshold = 65  # 弱风险：>=65 才进池
+        if result.has_risk and result.risk_score >= threshold:
             risk_results.append(result)
 
     # 保存原始分析结果到文件
@@ -231,7 +335,7 @@ def run_analysis(
         risk_results = risk_results[:config.MAX_CANDIDATE_POOL]
         candidate_count = len(risk_results)
 
-    update_progress("风险识别中", 70, f"候选池 {candidate_count} 个风险帧（score>={min_score}）")
+    update_progress("风险识别中", 70, f"候选池 {candidate_count} 个风险帧（按分类门槛筛选）")
 
     # ---------- Step 4: 类型感知去重 ----------
     update_progress("生成报告中", 75, f"去重中（同类型间隔>={config.MIN_GAP_SECONDS}s）")
@@ -269,6 +373,8 @@ def run_analysis(
             "risk_types": result.risk_types,
             "description": result.description,
             "reason": getattr(result, 'reason', ''),
+            "long_term_risk": getattr(result, 'long_term_risk', False),
+            "long_term_reason": getattr(result, 'long_term_reason', ''),
             "screenshot_path": screenshot_path,
         })
 

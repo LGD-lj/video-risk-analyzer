@@ -96,6 +96,8 @@ class VisionResult(BaseModel):
     risk_score: int = 0  # 0-100，运营风险评分
     reason: str = ""  # 为什么对运营路线有影响
     description: str = ""
+    long_term_risk: bool = False  # 是否长期风险
+    long_term_reason: str = ""  # 长期风险判断原因
 
 
 class TaskProgress(BaseModel):
