@@ -35,7 +35,7 @@ class Config:
 
     # ---------- 风险去重 ----------
     DEDUP_INTERVAL_SECONDS: int = int(os.getenv("DEDUP_INTERVAL_SECONDS", "30"))
-    MIN_GAP_SECONDS: int = int(os.getenv("MIN_GAP_SECONDS", "20"))  # 同类型风险最小间隔
+    MIN_GAP_SECONDS: int = int(os.getenv("MIN_GAP_SECONDS", "30"))  # 同类型风险最小间隔
 
     # ---------- 风险点数量 ----------
     MAX_RISK_POINTS: int = int(os.getenv("MAX_RISK_POINTS", "12"))

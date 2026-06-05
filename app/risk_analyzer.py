@@ -38,45 +38,48 @@ def _severity_rank(severity: str) -> int:
 
 def _deduplicate_risks(
     results: list[VisionResult],
-    min_gap_seconds: int = 20,
+    min_gap_seconds: int = 30,
 ) -> list[VisionResult]:
     """类型感知去重：
-    - 同类型风险在 min_gap_seconds 内只保留 risk_score 最高的
-    - 不同类型风险即使时间接近也保留
+    - 对每个已保留的帧，检查新帧的类型重叠率
+    - 重叠 >= 50% 且时间间隔 < min_gap_seconds → 视为重复，跳过
+    - 重叠 < 50% 或时间间隔足够 → 保留
     """
     if not results:
         return []
 
-    # 按时间排序
-    sorted_results = sorted(results, key=lambda r: r.timestamp_seconds)
+    # 按 risk_score 降序排列（高分优先保留）
+    sorted_results = sorted(results, key=lambda r: r.risk_score, reverse=True)
 
-    kept = []
-    # 记录每种风险类型上次保留的时间
-    last_kept: dict[str, float] = {}
+    kept: list[VisionResult] = []
 
     for r in sorted_results:
-        type_key = ",".join(sorted(r.risk_types)) if r.risk_types else "__none__"
-        last_time = last_kept.get(type_key, -999)
+        is_duplicate = False
+        r_types = set(r.risk_types) if r.risk_types else set()
 
-        if r.timestamp_seconds - last_time >= min_gap_seconds:
+        for k in kept:
+            k_types = set(k.risk_types) if k.risk_types else set()
+            if not r_types or not k_types:
+                continue
+
+            # 计算类型重叠率
+            overlap = len(r_types & k_types)
+            min_len = min(len(r_types), len(k_types))
+            overlap_ratio = overlap / min_len if min_len > 0 else 0
+
+            # 时间间隔
+            time_gap = abs(r.timestamp_seconds - k.timestamp_seconds)
+
+            # 类型重叠 >= 50% 且时间 < min_gap_seconds → 重复
+            if overlap_ratio >= 0.5 and time_gap < min_gap_seconds:
+                is_duplicate = True
+                break
+
+        if not is_duplicate:
             kept.append(r)
-            last_kept[type_key] = r.timestamp_seconds
-        else:
-            # 时间太近，但如果是不同类型组合，仍然保留
-            is_new_combo = True
-            for existing_type in last_kept:
-                if existing_type == type_key:
-                    continue
-                # 检查是否有显著重叠的类型（如 50% 以上相同）
-                existing_types = set(existing_type.split(","))
-                current_types = set(r.risk_types)
-                overlap = len(existing_types & current_types)
-                if overlap > 0 and overlap >= len(current_types) * 0.5:
-                    is_new_combo = False
-                    break
-            if is_new_combo:
-                kept.append(r)
 
+    # 最终按时间排序输出
+    kept.sort(key=lambda r: r.timestamp_seconds)
     return kept
 
 
@@ -181,6 +184,7 @@ def run_analysis(
     )
 
     risk_results: list[VisionResult] = []
+    all_results: list[dict] = []  # 保存所有帧的完整结果用于调试
     min_score = config.MIN_RISK_SCORE if config.RISK_RECALL_MODE else 50
 
     for i, frame in enumerate(frames):
@@ -199,9 +203,26 @@ def run_analysis(
             user_notes=user_notes,
         )
 
+        # 记录所有帧结果（调试用）
+        all_results.append({
+            "frame_index": result.frame_index,
+            "timestamp_seconds": result.timestamp_seconds,
+            "has_risk": result.has_risk,
+            "risk_score": result.risk_score,
+            "risk_types": result.risk_types,
+            "severity": result.severity,
+            "description": result.description[:80],
+            "reason": getattr(result, 'reason', ''),
+        })
         # 候选池：保留 risk_score >= MIN_RISK_SCORE 的所有帧
         if result.has_risk and result.risk_score >= min_score:
             risk_results.append(result)
+
+    # 保存原始分析结果到文件
+    raw_path = os.path.join(job_dir, "vision_raw.json")
+    with open(raw_path, "w", encoding="utf-8") as f:
+        json.dump(all_results, f, ensure_ascii=False, indent=2)
+    print(f"[DEBUG] Saved vision_raw.json with {len(all_results)} frames to {raw_path}")
 
     candidate_count = len(risk_results)
     # 候选池上限裁剪：按分数保留最高的
