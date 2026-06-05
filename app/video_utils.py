@@ -12,17 +12,26 @@ from .models import VideoInfo
 def format_duration_display(seconds: float) -> str:
     """将秒数格式化为用户友好显示
 
+    - 小于1秒但大于0: 1秒
     - 小于1小时: 0分10秒、3分25秒
     - 大于1小时: 1小时05分20秒
+    - 无法读取: 未知
     """
-    if not seconds or seconds <= 0:
-        return "0分0秒"
+    if seconds is None or seconds < 0:
+        return "未知"
+    if seconds == 0:
+        return "未知"
+    # 小于 1 秒的视频显示为 1 秒
+    if seconds < 1:
+        return "1秒"
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
     if h > 0:
         return f"{h}小时{m:02d}分{s:02d}秒"
-    return f"{m}分{s}秒"
+    if m > 0:
+        return f"{m}分{s}秒"
+    return f"0分{s}秒"
 
 
 def estimate_processing_time(duration_seconds: float, frame_interval: int, is_mock: bool) -> str:
@@ -54,7 +63,7 @@ def estimate_processing_time(duration_seconds: float, frame_interval: int, is_mo
 
 
 def get_video_info(video_path: str) -> VideoInfo:
-    """使用 ffprobe 获取视频元信息"""
+    """使用 ffprobe 获取视频元信息，duration 为 0 时用 OpenCV 兜底"""
     cmd = [
         "ffprobe",
         "-v", "quiet",
@@ -93,12 +102,41 @@ def get_video_info(video_path: str) -> VideoInfo:
 
     codec = video_stream.get("codec_name", "unknown")
 
+    # 获取 frame_count（ffprobe 流中的 nb_frames 或 format 中的 nb_streams 估算）
+    frame_count_str = video_stream.get("nb_frames", "0")
+    try:
+        frame_count = int(frame_count_str)
+    except (ValueError, TypeError):
+        frame_count = 0
+
+    # ═══════════════════════════════════════════════════════
+    # 关键修复：ffprobe duration 为 0 时，用 OpenCV 兜底
+    # ═══════════════════════════════════════════════════════
+    if duration <= 0 and fps > 0:
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if cap.isOpened():
+                cv_total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                cv_fps = cap.get(cv2.CAP_PROP_FPS)
+                cap.release()
+                if cv_fps > 0 and cv_total_frames > 0:
+                    duration = cv_total_frames / cv_fps
+                    if frame_count == 0:
+                        frame_count = cv_total_frames
+                    if fps == 0:
+                        fps = cv_fps
+        except Exception:
+            pass  # OpenCV 兜底失败，维持 duration=0
+
     return VideoInfo(
         filename=os.path.basename(video_path),
-        duration_seconds=duration,
+        duration_seconds=round(duration, 2),
         resolution=f"{width}x{height}",
-        fps=fps,
+        fps=round(fps, 2),
         codec=codec,
+        frame_count=frame_count,
+        width=width,
+        height=height,
     )
 
 

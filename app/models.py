@@ -68,6 +68,9 @@ class VideoInfo(BaseModel):
     resolution: str  # e.g. "1920x1080"
     fps: float
     codec: str = "unknown"
+    frame_count: int = 0
+    width: int = 0
+    height: int = 0
 
 
 class VisionResult(BaseModel):
