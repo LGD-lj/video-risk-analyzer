@@ -60,28 +60,46 @@ def _deduplicate_risks(
 
 def _select_top_risks(
     results: list[VisionResult],
-    min_count: int = 5,
-    max_count: int = 10,
+    max_count: int = 12,
 ) -> list[VisionResult]:
-    """按严重程度和代表性筛选最终风险点"""
+    """按严重程度和代表性筛选最终风险点
+
+    原则：
+    - 默认目标 5-10 个，上限 12 个
+    - 风险很少时少于 5 个也可以
+    - 风险很多时尽量控制在 12 个以内
+    - 严重程度优先，避免重复输出相似风险点
+    """
     if not results:
         return []
 
-    # 按严重程度排序
+    # 按严重程度排序（高 > 中 > 低），同等级按时间
     sorted_results = sorted(
         results,
         key=lambda r: (_severity_rank(r.severity), -r.timestamp_seconds),
         reverse=True,
     )
 
-    selected = sorted_results[:max_count]
+    # 去重：同类型风险在时间上相近的只保留严重程度最高的
+    selected = []
+    seen_buckets: set[tuple] = set()
 
-    # 如果够了最小数量就直接返回
-    if len(selected) >= min_count:
-        return selected
+    for r in sorted_results:
+        time_bucket = int(r.timestamp_seconds // 30)  # 30 秒一个桶
+        risk_key = ",".join(sorted(r.risk_types))
+        bucket_key = (risk_key, time_bucket)
 
-    # 不够的话全部返回
-    return sorted_results[:max_count]
+        if bucket_key in seen_buckets:
+            continue  # 跳过同类型+同时段的重复
+
+        seen_buckets.add(bucket_key)
+        selected.append(r)
+
+        # 达到上限就停
+        if len(selected) >= max_count:
+            break
+
+    return selected
 
 
 def _parse_risk_type(risk_type_str: str) -> RiskType:
@@ -106,6 +124,7 @@ def run_analysis(
     video_path: str,
     job_dir: str,
     progress_callback: Optional[callable] = None,
+    user_notes: str = "",
 ) -> tuple[list[RiskPoint], str, str]:
     """执行完整风险分析流程
 
@@ -114,6 +133,7 @@ def run_analysis(
         video_path: 视频文件路径
         job_dir: 任务工作目录
         progress_callback: 进度回调 (stage, percent, message)
+        user_notes: 用户额外关注内容
 
     Returns:
         (risk_points, report_path, screenshots_zip_path)
@@ -123,18 +143,18 @@ def run_analysis(
         if progress_callback:
             progress_callback(stage, percent, message)
 
-    # ---------- Step 1: 视频信息 ----------
-    update_progress("读取视频信息", 5)
+    # ---------- Step 1: 视频校验 ----------
+    update_progress("视频校验", 3)
     video_info = get_video_info(video_path)
 
     # ---------- Step 2: 抽帧 ----------
-    update_progress("抽取视频帧", 10)
+    update_progress("抽帧中", 8)
     frames_dir = os.path.join(job_dir, "frames")
     frames = extract_frames(video_path, frames_dir, config.FRAME_INTERVAL_SECONDS)
     total_frames = len(frames)
-    update_progress(f"共抽取 {total_frames} 帧", 15)
+    update_progress("抽帧中", 15, f"已抽取 {total_frames} 帧")
 
-    # ---------- Step 3: 视觉模型逐帧分析 ----------
+    # ---------- Step 3: 风险识别 ----------
     vision = create_vision_provider(
         provider_type=config.VISION_PROVIDER,
         api_key=config.VISION_API_KEY,
@@ -147,31 +167,33 @@ def run_analysis(
         pct = 15 + int((i / max(total_frames, 1)) * 55)  # 15% → 70%
         ts_display = _format_timestamp(frame["timestamp_seconds"])
         update_progress(
-            f"视觉分析第 {i+1}/{total_frames} 帧 ({ts_display})",
+            "风险识别中",
             pct,
+            f"分析第 {i+1}/{total_frames} 帧 ({ts_display})",
         )
 
         result = vision.analyze_frame(
             image_path=frame["path"],
             frame_index=frame["index"],
             timestamp_seconds=frame["timestamp_seconds"],
+            user_notes=user_notes,
         )
 
         if result.has_risk:
             risk_results.append(result)
 
-    update_progress(f"识别到 {len(risk_results)} 个潜在风险帧", 70)
+    update_progress("风险识别中", 70, f"识别到 {len(risk_results)} 个潜在风险帧")
 
     # ---------- Step 4: 去重 ----------
-    update_progress("风险去重", 75)
+    update_progress("生成报告中", 75, "风险去重中")
     deduped = _deduplicate_risks(risk_results, config.DEDUP_INTERVAL_SECONDS)
 
-    # ---------- Step 5: 筛选 5-10 个 ----------
-    update_progress("筛选最终风险点", 80)
-    selected = _select_top_risks(deduped, config.MIN_RISK_POINTS, config.MAX_RISK_POINTS)
+    # ---------- Step 5: 筛选（灵活数量） ----------
+    update_progress("生成报告中", 80, "筛选最终风险点")
+    selected = _select_top_risks(deduped, config.MAX_RISK_POINTS)
 
     # ---------- Step 6: 保存截图 ----------
-    update_progress("保存风险截图", 85)
+    update_progress("生成报告中", 85, "保存风险截图")
     screenshots_dir = os.path.join(job_dir, "screenshots")
     os.makedirs(screenshots_dir, exist_ok=True)
 
@@ -200,7 +222,7 @@ def run_analysis(
         })
 
     # ---------- Step 7: DeepSeek 润色描述 ----------
-    update_progress("AI 润色风险描述", 90)
+    update_progress("生成报告中", 90, "AI 润色风险描述")
     llm = DeepSeekProvider(
         api_key=config.DEEPSEEK_API_KEY,
         base_url=config.DEEPSEEK_BASE_URL,
@@ -227,8 +249,27 @@ def run_analysis(
             screenshot_path=item["screenshot_path"],
         ))
 
+    # ---------- Step 8.5: 保存 risk_points.json ----------
+    update_progress("生成报告中", 92, "保存分析结果")
+    try:
+        risk_points_json = []
+        for rp in risk_points:
+            risk_points_json.append({
+                "index": i + 1,
+                "timestamp_seconds": rp.timestamp_seconds,
+                "timestamp_display": rp.timestamp_display,
+                "severity": rp.severity.value if hasattr(rp.severity, 'value') else rp.severity,
+                "risk_types": [rt.value if hasattr(rt, 'value') else str(rt) for rt in rp.risk_types],
+                "description": rp.description,
+            })
+        json_path = os.path.join(job_dir, "risk_points.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(risk_points_json, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[WARN] 保存 risk_points.json 失败: {e}")
+
     # ---------- Step 9: 生成 Word 报告 ----------
-    update_progress("生成 Word 报告", 93)
+    update_progress("生成报告中", 93, "生成 Word 报告")
     report_path = os.path.join(job_dir, "风险分析报告.docx")
     generate_word_report(
         video_info=video_info,
@@ -237,7 +278,7 @@ def run_analysis(
     )
 
     # ---------- Step 10: 打包截图 ZIP ----------
-    update_progress("打包截图", 97)
+    update_progress("生成报告中", 97, "打包截图")
     zip_path = os.path.join(job_dir, "screenshots.zip")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for rp in risk_points:
@@ -245,5 +286,5 @@ def run_analysis(
                 arcname = os.path.basename(rp.screenshot_path)
                 zf.write(rp.screenshot_path, arcname)
 
-    update_progress("分析完成", 100)
+    update_progress("已完成", 100, "分析完成")
     return risk_points, report_path, zip_path

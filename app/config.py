@@ -16,12 +16,13 @@ class Config:
     DATA_DIR: str = os.getenv("DATA_DIR", "data/jobs")
     MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "2000"))
     CLEANUP_HOURS: int = int(os.getenv("CLEANUP_HOURS", "24"))
+    FAILED_JOB_RETENTION_HOURS: int = int(os.getenv("FAILED_JOB_RETENTION_HOURS", "1"))
 
     # ---------- 视频处理 ----------
     FRAME_INTERVAL_SECONDS: int = int(os.getenv("FRAME_INTERVAL_SECONDS", "5"))
     DEDUP_INTERVAL_SECONDS: int = int(os.getenv("DEDUP_INTERVAL_SECONDS", "30"))
-    MAX_RISK_POINTS: int = int(os.getenv("MAX_RISK_POINTS", "10"))
-    MIN_RISK_POINTS: int = int(os.getenv("MIN_RISK_POINTS", "5"))
+    MAX_RISK_POINTS: int = int(os.getenv("MAX_RISK_POINTS", "12"))
+    MIN_RISK_POINTS: int = int(os.getenv("MIN_RISK_POINTS", "3"))
 
     # ---------- 视觉模型配置（可替换 provider）----------
     VISION_PROVIDER: str = os.getenv("VISION_PROVIDER", "openai")  # openai | custom

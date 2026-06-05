@@ -12,11 +12,13 @@ from .models import VideoInfo, RiskPoint
 
 def _format_duration(seconds: float) -> str:
     """格式化时长"""
+    if not seconds or seconds <= 0:
+        return "0分0秒"
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
     if h > 0:
-        return f"{h}时{m}分{s}秒"
+        return f"{h}小时{m:02d}分{s:02d}秒"
     return f"{m}分{s}秒"
 
 

@@ -56,6 +56,9 @@ class JobInfo(BaseModel):
     screenshots_zip_url: Optional[str] = None
     error_message: Optional[str] = None
     created_at: str = ""
+    estimated_time: Optional[str] = None  # 预计处理时间描述
+    user_notes: Optional[str] = None  # 用户额外关注内容
+    duration_display: Optional[str] = None  # 格式化后的视频时长
 
 
 class VideoInfo(BaseModel):

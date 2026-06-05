@@ -83,6 +83,69 @@
             font-size: 0.95em;
         }
 
+        .optional-input {
+            margin-top: 16px;
+            text-align: left;
+        }
+        .optional-input label {
+            display: block;
+            color: #aaa;
+            font-size: 0.9em;
+            margin-bottom: 6px;
+        }
+        .optional-input .hint {
+            color: #666;
+            font-size: 0.78em;
+            margin-bottom: 8px;
+        }
+        .optional-input input {
+            width: 100%;
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.06);
+            color: #e0e0e0;
+            font-size: 0.9em;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        .optional-input input:focus {
+            border-color: #667eea;
+        }
+        .optional-input input::placeholder {
+            color: #555;
+        }
+
+        .est-time {
+            margin-top: 12px;
+            padding: 10px 14px;
+            background: rgba(102, 126, 234, 0.1);
+            border-radius: 8px;
+            color: #667eea;
+            font-size: 0.9em;
+            text-align: center;
+        }
+
+        .progress-stages {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            font-size: 0.75em;
+            color: #555;
+        }
+        .progress-stages .stage-item {
+            text-align: center;
+            flex: 1;
+            position: relative;
+        }
+        .progress-stages .stage-item.active {
+            color: #667eea;
+            font-weight: 600;
+        }
+        .progress-stages .stage-item.done {
+            color: #4ade80;
+        }
+
         #fileInput { display: none; }
 
         .btn {
@@ -233,18 +296,34 @@
                 <div class="file-name hidden" id="fileName"></div>
             </div>
             <input type="file" id="fileInput" accept="video/mp4,video/mov,video/avi,video/x-msvideo,video/mkv,video/webm">
+
+            <div class="optional-input hidden" id="userNotesArea">
+                <label>📝 额外关注内容 / 风险提示 <span style="color:#666; font-weight:normal">(可选)</span></label>
+                <div class="hint">可填写重点关注内容，例如：限高、施工、窄路、非机动车、闸口、停车占道等</div>
+                <input type="text" id="userNotesInput" placeholder="例如：限高、施工、窄路">
+            </div>
+
             <button class="btn btn-primary hidden" id="uploadBtn" style="margin-top:16px">🚀 开始分析</button>
+            <div class="est-time hidden" id="estTime"></div>
         </div>
 
         <!-- 进度区 -->
         <div class="card hidden" id="progressCard">
             <h3 style="margin-bottom:16px">⏳ 分析进度</h3>
+            <div class="progress-stages" id="progressStages">
+                <span class="stage-item" data-stage="已上传">已上传</span>
+                <span class="stage-item" data-stage="视频校验">视频校验</span>
+                <span class="stage-item" data-stage="抽帧中">抽帧中</span>
+                <span class="stage-item" data-stage="风险识别中">风险识别中</span>
+                <span class="stage-item" data-stage="生成报告中">生成报告中</span>
+                <span class="stage-item" data-stage="已完成">已完成</span>
+            </div>
             <div class="progress-container">
                 <div class="progress-bar-bg">
                     <div class="progress-bar-fill" id="progressBar"></div>
                 </div>
                 <div class="progress-text">
-                    <span class="progress-stage" id="progressStage">准备中...</span>
+                    <span class="progress-stage" id="progressStage">已上传</span>
                     <span id="progressPercent">0%</span>
                 </div>
             </div>
@@ -298,10 +377,19 @@
         const progressCard = document.getElementById('progressCard');
         const resultCard = document.getElementById('resultCard');
         const errorCard = document.getElementById('errorCard');
+        const userNotesArea = document.getElementById('userNotesArea');
+        const userNotesInput = document.getElementById('userNotesInput');
+        const estTime = document.getElementById('estTime');
 
         let selectedFile = null;
         let currentJobId = null;
         let pollTimer = null;
+
+        // 所有进度阶段的顺序
+        const STAGE_ORDER = ['已上传', '视频校验', '抽帧中', '风险识别中', '生成报告中', '已完成'];
+
+        // 当前活跃阶段
+        let currentStageIdx = 0;
 
         // 点击上传区域
         uploadArea.addEventListener('click', () => fileInput.click());
@@ -338,6 +426,8 @@
             fileName.classList.remove('hidden');
             uploadArea.classList.add('has-file');
             uploadBtn.classList.remove('hidden');
+            userNotesArea.classList.remove('hidden');
+            estTime.classList.add('hidden');
         }
 
         // 上传按钮
@@ -352,9 +442,16 @@
             errorCard.classList.add('hidden');
             uploadBtn.disabled = true;
             uploadBtn.textContent = '⏳ 上传中...';
+            currentStageIdx = 0;
+            resetStageLights();
 
             const formData = new FormData();
             formData.append('file', selectedFile);
+            // 附加用户关注内容
+            const notes = userNotesInput.value.trim();
+            if (notes) {
+                formData.append('user_notes', notes);
+            }
 
             try {
                 const resp = await fetch('/api/upload', {
@@ -372,6 +469,11 @@
 
                 // 更新进度区
                 updateProgress(job);
+                // 显示预计时间
+                if (job.estimated_time) {
+                    estTime.textContent = job.estimated_time;
+                    estTime.classList.remove('hidden');
+                }
                 uploadCard.classList.add('hidden');
 
                 // 开始轮询
@@ -411,11 +513,40 @@
             }
         }
 
+        function resetStageLights() {
+            document.querySelectorAll('.progress-stages .stage-item').forEach(el => {
+                el.classList.remove('active', 'done');
+            });
+        }
+
+        function updateStageLights(stage) {
+            const idx = STAGE_ORDER.indexOf(stage);
+            if (idx < 0) return;
+            const items = document.querySelectorAll('.progress-stages .stage-item');
+            items.forEach((el, i) => {
+                el.classList.remove('active', 'done');
+                if (i < idx) el.classList.add('done');
+                else if (i === idx) el.classList.add('active');
+            });
+        }
+
         function updateProgress(job) {
             document.getElementById('progressBar').style.width = job.progress_percent + '%';
             document.getElementById('progressPercent').textContent = job.progress_percent + '%';
             document.getElementById('progressStage').textContent = job.stage || '处理中...';
-            document.getElementById('progressMessage').textContent = job.message || '';
+
+            // 更新阶段指示灯
+            updateStageLights(job.stage);
+
+            // 构建消息：进度 + ETA
+            let msg = job.message || '';
+            if (job.eta_seconds && job.progress_percent > 0 && job.progress_percent < 100) {
+                const eta = formatEta(job.eta_seconds);
+                if (eta) {
+                    msg = msg ? msg + ' | ' + eta : eta;
+                }
+            }
+            document.getElementById('progressMessage').textContent = msg;
         }
 
         function showResult(job) {
@@ -438,6 +569,12 @@
                 zipLink.href = job.screenshots_zip_url;
                 zipLink.classList.remove('hidden');
             }
+
+            // 完成时所有阶段灯亮起
+            document.querySelectorAll('.progress-stages .stage-item').forEach(el => {
+                el.classList.remove('active');
+                el.classList.add('done');
+            });
         }
 
         function showError(msg) {
@@ -447,12 +584,23 @@
         }
 
         function formatDuration(seconds) {
-            if (!seconds) return '-';
+            if (!seconds || seconds <= 0) return '0分0秒';
             const h = Math.floor(seconds / 3600);
             const m = Math.floor((seconds % 3600) / 60);
             const s = Math.floor(seconds % 60);
-            if (h > 0) return `${h}时${m}分${s}秒`;
+            if (h > 0) return `${h}小时${String(m).padStart(2,'0')}分${String(s).padStart(2,'0')}秒`;
             return `${m}分${s}秒`;
+        }
+
+        function formatEta(seconds) {
+            if (!seconds || seconds <= 0) return '';
+            if (seconds < 60) return `预计剩余 ${seconds} 秒`;
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            if (m < 60) return `预计剩余 ${m}分${s}秒`;
+            const h = Math.floor(m / 60);
+            const rm = m % 60;
+            return `预计剩余 ${h}小时${rm}分`;
         }
 
         function showToast(msg) {

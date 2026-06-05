@@ -1,4 +1,4 @@
-"""FastAPI 入口 —— Web 服务和 API 路由"""
+"""FastAPI 入口 —— Web 服务和 API 路由 v1.1"""
 
 import os
 import uuid
@@ -8,14 +8,14 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import config
 from .models import JobInfo, JobStatus, TaskProgress
-from .video_utils import get_video_info
+from .video_utils import get_video_info, format_duration_display, estimate_processing_time
 from .risk_analyzer import run_analysis
 from .cleanup import cleanup_old_jobs
 
@@ -84,6 +84,17 @@ def _update_job(
         return
 
     job = _jobs_store[job_id]
+
+    # 计算 ETA
+    started_at = job.get("started_at")
+    if started_at and progress_percent > 0 and progress_percent < 100:
+        if isinstance(started_at, str):
+            started_at = datetime.fromisoformat(started_at)
+        elapsed = (datetime.now() - started_at).total_seconds()
+        if elapsed > 0:
+            eta_seconds = elapsed / progress_percent * (100 - progress_percent)
+            job["eta_seconds"] = int(eta_seconds)
+
     if status:
         job["status"] = status
 
@@ -95,7 +106,7 @@ def _update_job(
     _save_job_meta(job_id, job)
 
 
-def _run_analysis_background(job_id: str, video_path: str, job_dir: str):
+def _run_analysis_background(job_id: str, video_path: str, job_dir: str, user_notes: str = ""):
     """后台线程执行分析"""
     try:
         def progress_callback(stage: str, percent: int, message: str = ""):
@@ -112,17 +123,22 @@ def _run_analysis_background(job_id: str, video_path: str, job_dir: str):
             video_path=video_path,
             job_dir=job_dir,
             progress_callback=progress_callback,
+            user_notes=user_notes,
         )
+
+        # ---------- 成功后清理 ----------
+        _cleanup_job_files(job_id, job_dir, video_path)
 
         _update_job(
             job_id,
             status=JobStatus.COMPLETED,
-            stage="完成",
+            stage="已完成",
             progress_percent=100,
             message="分析完成",
             risk_count=len(risk_points),
             report_path=report_path,
             screenshots_zip_path=zip_path,
+            video_path=None,  # 原始视频已删除
         )
 
     except Exception as e:
@@ -136,7 +152,33 @@ def _run_analysis_background(job_id: str, video_path: str, job_dir: str):
             progress_percent=0,
             message=str(e),
             error_message=error_detail,
+            failed_at=datetime.now().isoformat(),
         )
+
+
+def _cleanup_job_files(job_id: str, job_dir: str, video_path: str = None):
+    """任务成功后清理临时文件：删除原始视频和抽帧图片"""
+    files_removed = []
+
+    # 删除原始上传视频
+    if video_path and os.path.exists(video_path):
+        try:
+            os.remove(video_path)
+            files_removed.append("原始视频")
+        except OSError as e:
+            print(f"[CLEANUP] 删除视频失败 {video_path}: {e}")
+
+    # 删除 frames 目录
+    frames_dir = os.path.join(job_dir, "frames")
+    if os.path.isdir(frames_dir):
+        try:
+            shutil.rmtree(frames_dir, ignore_errors=True)
+            files_removed.append("抽帧图片")
+        except OSError as e:
+            print(f"[CLEANUP] 删除 frames 失败 {frames_dir}: {e}")
+
+    if files_removed:
+        print(f"[CLEANUP] 任务 {job_id}: 已清理 {', '.join(files_removed)}")
 
 
 # ==================== API 路由 ====================
@@ -156,7 +198,10 @@ async def health_check():
 
 
 @app.post("/api/upload", response_model=JobInfo)
-async def upload_video(file: UploadFile = File(...)):
+async def upload_video(
+    file: UploadFile = File(...),
+    user_notes: str = Form(""),
+):
     """上传视频文件，创建分析任务"""
     # 检查是否有任何 API Key 配置（至少视觉模型要可用）
     # Mock 模式下也可以运行
@@ -201,13 +246,23 @@ async def upload_video(file: UploadFile = File(...)):
         shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=f"无法读取视频文件: {e}")
 
+    # 预估处理时间
+    estimated_time = estimate_processing_time(
+        duration_seconds=video_info.duration_seconds,
+        frame_interval=config.FRAME_INTERVAL_SECONDS,
+        is_mock=mock_mode,
+    )
+    duration_display = format_duration_display(video_info.duration_seconds)
+
     # 创建任务记录
+    started_at = datetime.now()
     job_data = {
         "job_id": job_id,
-        "status": JobStatus.PENDING,
+        "status": JobStatus.PROCESSING,  # 直接进入处理状态
         "filename": filename,
         "original_filename": filename,
         "duration_seconds": video_info.duration_seconds,
+        "duration_display": duration_display,
         "resolution": video_info.resolution,
         "fps": video_info.fps,
         "total_frames": None,
@@ -215,10 +270,15 @@ async def upload_video(file: UploadFile = File(...)):
         "report_url": None,
         "screenshots_zip_url": None,
         "error_message": None,
-        "stage": "",
+        "stage": "已上传",
         "progress_percent": 0,
-        "message": "",
-        "created_at": datetime.now(),
+        "message": estimated_time,
+        "created_at": started_at,
+        "started_at": started_at,
+        "estimated_time": estimated_time,
+        "user_notes": user_notes.strip() if user_notes else "",
+        "mock_mode": mock_mode,
+        "video_path": video_path,
     }
     _jobs_store[job_id] = job_data
     _save_job_meta(job_id, job_data)
@@ -226,27 +286,22 @@ async def upload_video(file: UploadFile = File(...)):
     # 后台启动分析
     thread = threading.Thread(
         target=_run_analysis_background,
-        args=(job_id, video_path, job_dir),
+        args=(job_id, video_path, job_dir, user_notes.strip() if user_notes else ""),
         daemon=True,
     )
     thread.start()
-
-    _update_job(
-        job_id,
-        status=JobStatus.PROCESSING,
-        stage="初始化",
-        progress_percent=0,
-        message="任务已创建，开始分析...",
-    )
 
     return JobInfo(
         job_id=job_id,
         status=JobStatus.PROCESSING,
         filename=filename,
         duration_seconds=video_info.duration_seconds,
+        duration_display=duration_display,
         resolution=video_info.resolution,
         fps=video_info.fps,
         created_at=job_data["created_at"].isoformat(),
+        estimated_time=estimated_time,
+        user_notes=user_notes.strip() if user_notes else "",
     )
 
 
@@ -277,6 +332,7 @@ async def get_job_status(job_id: str):
         "status": job.get("status", "unknown"),
         "filename": job.get("filename", ""),
         "duration_seconds": job.get("duration_seconds"),
+        "duration_display": job.get("duration_display", ""),
         "resolution": job.get("resolution"),
         "fps": job.get("fps"),
         "risk_count": job.get("risk_count"),
@@ -286,7 +342,11 @@ async def get_job_status(job_id: str):
         "progress_percent": job.get("progress_percent", 0),
         "message": job.get("message", ""),
         "error_message": job.get("error_message"),
-        "created_at": job.get("created_at", ""),
+        "created_at": str(job.get("created_at", "")),
+        "estimated_time": job.get("estimated_time", ""),
+        "eta_seconds": job.get("eta_seconds"),
+        "user_notes": job.get("user_notes", ""),
+        "mock_mode": job.get("mock_mode", config.get_mock_mode()),
     }
 
 
@@ -341,7 +401,7 @@ async def download_screenshots(job_id: str):
 @app.post("/api/cleanup")
 async def trigger_cleanup():
     """手动触发清理旧任务"""
-    count = cleanup_old_jobs(config.DATA_DIR, config.CLEANUP_HOURS)
+    count = cleanup_old_jobs(config.DATA_DIR, config.CLEANUP_HOURS, config.FAILED_JOB_RETENTION_HOURS)
     return {"cleaned_jobs": count, "max_age_hours": config.CLEANUP_HOURS}
 
 
@@ -374,7 +434,7 @@ async def startup_cleanup():
     else:
         print(f"[INFO] 所有 API Key 已配置，正式模式运行中")
 
-    count = cleanup_old_jobs(config.DATA_DIR, config.CLEANUP_HOURS)
+    count = cleanup_old_jobs(config.DATA_DIR, config.CLEANUP_HOURS, config.FAILED_JOB_RETENTION_HOURS)
     if count > 0:
         print(f"[CLEANUP] 启动时清理了 {count} 个过期任务目录")
 
@@ -402,3 +462,5 @@ if __name__ == "__main__":
         port=config.PORT,
         reload=True,
     )
+
+ 

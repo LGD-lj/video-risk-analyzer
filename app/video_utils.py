@@ -9,6 +9,50 @@ import cv2
 from .models import VideoInfo
 
 
+def format_duration_display(seconds: float) -> str:
+    """将秒数格式化为用户友好显示
+
+    - 小于1小时: 0分10秒、3分25秒
+    - 大于1小时: 1小时05分20秒
+    """
+    if not seconds or seconds <= 0:
+        return "0分0秒"
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    if h > 0:
+        return f"{h}小时{m:02d}分{s:02d}秒"
+    return f"{m}分{s}秒"
+
+
+def estimate_processing_time(duration_seconds: float, frame_interval: int, is_mock: bool) -> str:
+    """根据视频参数估算处理时间
+
+    返回: 预计处理时间描述字符串
+    """
+    if duration_seconds <= 0:
+        return "无法估算处理时间"
+
+    total_frames = max(1, int(duration_seconds / frame_interval) + 1)
+    duration_display = format_duration_display(duration_seconds)
+
+    if is_mock:
+        # Mock 模式: 每帧约 0.15s，加固定开销
+        est_seconds = total_frames * 0.15 + 3
+        est_min_low = max(0.1, est_seconds / 60 * 0.7)
+        est_min_high = max(0.2, est_seconds / 60 * 1.5)
+    else:
+        # 真实视觉模型: 每帧约 3-6 秒 (API 调用)
+        est_min_low = total_frames * 2.5 / 60 + 0.5
+        est_min_high = total_frames * 6 / 60 + 1
+
+    # 小于1分钟时显示秒
+    if est_min_high < 1:
+        return f"视频时长约 {duration_display}，预计处理 {int(est_min_low*60)}-{int(est_min_high*60)} 秒，请勿关闭页面。"
+
+    return f"视频时长约 {duration_display}，预计处理 {int(est_min_low)}-{int(est_min_high)} 分钟，请勿关闭页面。"
+
+
 def get_video_info(video_path: str) -> VideoInfo:
     """使用 ffprobe 获取视频元信息"""
     cmd = [

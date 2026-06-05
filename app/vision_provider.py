@@ -44,6 +44,7 @@ class BaseVisionProvider(ABC):
         image_path: str,
         frame_index: int,
         timestamp_seconds: float,
+        user_notes: str = "",
     ) -> VisionResult:
         """分析单帧图片，返回风险识别结果"""
         ...
@@ -69,11 +70,20 @@ class OpenAIVisionProvider(BaseVisionProvider):
         image_path: str,
         frame_index: int,
         timestamp_seconds: float,
+        user_notes: str = "",
     ) -> VisionResult:
         """调用视觉模型分析单帧"""
         image_b64 = _encode_image(image_path)
 
-        system_prompt = """你是一个行车记录仪视频风险分析专家。请仔细观察图片，判断是否存在驾驶风险。
+        # 构建 system prompt，如有 user_notes 则追加
+        user_notes_section = ""
+        if user_notes.strip():
+            user_notes_section = f"""
+
+用户特别关注以下风险类型：{user_notes.strip()}
+请特别留意以上用户提到的内容，但同时也要自动识别其他明显风险，不要只限于用户关注的内容。"""
+
+        system_prompt = f"""你是一个行车记录仪视频风险分析专家。请仔细观察图片，判断是否存在驾驶风险。
 
 风险类型包括：
 - 施工：路面施工、围挡、施工标志
@@ -86,14 +96,14 @@ class OpenAIVisionProvider(BaseVisionProvider):
 - 货车遮挡：前方大货车遮挡视线
 - 停车占道：路边违章停车占用行车道
 - 低净空：桥梁/隧道高度不足（注意判断是否对小车有限高影响）
-
+{user_notes_section}
 请严格按以下 JSON 格式返回（不要包含其他文字）：
-{
+{{
   "has_risk": true/false,
   "risk_types": ["施工", "限高"],
   "severity": "高" 或 "中" 或 "低",
   "description": "简要描述看到的场景和风险（20字以内）"
-}
+}}
 
 判断标准：
 - 高：直接威胁行车安全，需立即采取措施（如前方施工占道、行人突然横穿）
@@ -207,6 +217,7 @@ class MockVisionProvider(BaseVisionProvider):
         image_path: str,
         frame_index: int,
         timestamp_seconds: float,
+        user_notes: str = "",
     ) -> VisionResult:
         """模拟分析单帧"""
         # 使用 frame_index 的 hash 来产生确定性但看起来随机的输出
