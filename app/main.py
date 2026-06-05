@@ -1,0 +1,404 @@
+"""FastAPI 入口 —— Web 服务和 API 路由"""
+
+import os
+import uuid
+import json
+import shutil
+import threading
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+
+from .config import config
+from .models import JobInfo, JobStatus, TaskProgress
+from .video_utils import get_video_info
+from .risk_analyzer import run_analysis
+from .cleanup import cleanup_old_jobs
+
+# ---------- 初始化 ----------
+app = FastAPI(
+    title="视频风险点分析系统",
+    description="上传行车记录视频，AI 自动识别风险点，生成 Word 报告",
+    version="1.0.0",
+)
+
+# CORS（允许本地前端调用）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 确保数据目录存在
+os.makedirs(config.DATA_DIR, exist_ok=True)
+
+# 任务状态存储（内存，V1 简单实现）
+# 生产环境可替换为 Redis 或数据库
+_jobs_store: dict[str, dict] = {}
+
+# 任务状态文件目录
+JOBS_META_DIR = os.path.join(config.DATA_DIR, "_meta")
+os.makedirs(JOBS_META_DIR, exist_ok=True)
+
+
+def _save_job_meta(job_id: str, data: dict):
+    """持久化任务元数据到 JSON 文件"""
+    from pathlib import Path
+    meta_path = os.path.join(JOBS_META_DIR, f"{job_id}.json")
+    # 确保 datetime 等可序列化
+    data_copy = {}
+    for k, v in data.items():
+        if isinstance(v, datetime):
+            data_copy[k] = v.isoformat()
+        else:
+            data_copy[k] = v
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(data_copy, f, ensure_ascii=False, indent=2)
+
+
+def _load_job_meta(job_id: str) -> dict | None:
+    """从 JSON 文件加载任务元数据"""
+    meta_path = os.path.join(JOBS_META_DIR, f"{job_id}.json")
+    if not os.path.exists(meta_path):
+        return None
+    with open(meta_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _update_job(
+    job_id: str,
+    status: JobStatus | None = None,
+    stage: str = "",
+    progress_percent: int = 0,
+    message: str = "",
+    **kwargs,
+):
+    """更新任务状态"""
+    if job_id not in _jobs_store:
+        return
+
+    job = _jobs_store[job_id]
+    if status:
+        job["status"] = status
+
+    job["stage"] = stage
+    job["progress_percent"] = progress_percent
+    job["message"] = message
+    job.update(kwargs)
+
+    _save_job_meta(job_id, job)
+
+
+def _run_analysis_background(job_id: str, video_path: str, job_dir: str):
+    """后台线程执行分析"""
+    try:
+        def progress_callback(stage: str, percent: int, message: str = ""):
+            _update_job(
+                job_id,
+                status=JobStatus.PROCESSING,
+                stage=stage,
+                progress_percent=percent,
+                message=message,
+            )
+
+        risk_points, report_path, zip_path = run_analysis(
+            job_id=job_id,
+            video_path=video_path,
+            job_dir=job_dir,
+            progress_callback=progress_callback,
+        )
+
+        _update_job(
+            job_id,
+            status=JobStatus.COMPLETED,
+            stage="完成",
+            progress_percent=100,
+            message="分析完成",
+            risk_count=len(risk_points),
+            report_path=report_path,
+            screenshots_zip_path=zip_path,
+        )
+
+    except Exception as e:
+        import traceback
+        error_detail = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"[ERROR] 任务 {job_id} 失败: {error_detail}")
+        _update_job(
+            job_id,
+            status=JobStatus.FAILED,
+            stage="错误",
+            progress_percent=0,
+            message=str(e),
+            error_message=error_detail,
+        )
+
+
+# ==================== API 路由 ====================
+
+@app.get("/api/health")
+async def health_check():
+    """健康检查"""
+    missing_keys = config.get_missing_keys()
+    mock_mode = config.get_mock_mode()
+    return {
+        "status": "ok",
+        "version": "1.0.0",
+        "mock_mode": mock_mode,
+        "missing_keys": missing_keys,
+        "warning": "Mock 模式已启用，AI 分析结果仅为模拟数据。请配置 API Key 后重启服务。" if mock_mode else None,
+    }
+
+
+@app.post("/api/upload", response_model=JobInfo)
+async def upload_video(file: UploadFile = File(...)):
+    """上传视频文件，创建分析任务"""
+    # 检查是否有任何 API Key 配置（至少视觉模型要可用）
+    # Mock 模式下也可以运行
+    mock_mode = config.get_mock_mode()
+    if mock_mode:
+        print(f"[INFO] Mock mode active, missing keys: {config.get_missing_keys()}")
+
+    # 校验文件格式
+    filename = file.filename or "unknown.mp4"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in (".mp4", ".mov", ".avi", ".mkv", ".webm"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: {ext}，请上传 mp4/mov/avi/mkv/webm 视频",
+        )
+
+    # 校验文件大小
+    content = await file.read()
+    size_mb = len(content) / (1024 * 1024)
+    if size_mb > config.MAX_UPLOAD_SIZE_MB:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件过大 ({size_mb:.1f}MB)，最大支持 {config.MAX_UPLOAD_SIZE_MB}MB",
+        )
+
+    # 创建任务目录
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = os.path.join(config.DATA_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+
+    # 保存视频文件
+    safe_filename = f"video{ext}"
+    video_path = os.path.join(job_dir, safe_filename)
+    with open(video_path, "wb") as f:
+        f.write(content)
+
+    # 获取视频信息
+    try:
+        video_info = get_video_info(video_path)
+    except Exception as e:
+        # 清理
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"无法读取视频文件: {e}")
+
+    # 创建任务记录
+    job_data = {
+        "job_id": job_id,
+        "status": JobStatus.PENDING,
+        "filename": filename,
+        "original_filename": filename,
+        "duration_seconds": video_info.duration_seconds,
+        "resolution": video_info.resolution,
+        "fps": video_info.fps,
+        "total_frames": None,
+        "risk_count": None,
+        "report_url": None,
+        "screenshots_zip_url": None,
+        "error_message": None,
+        "stage": "",
+        "progress_percent": 0,
+        "message": "",
+        "created_at": datetime.now(),
+    }
+    _jobs_store[job_id] = job_data
+    _save_job_meta(job_id, job_data)
+
+    # 后台启动分析
+    thread = threading.Thread(
+        target=_run_analysis_background,
+        args=(job_id, video_path, job_dir),
+        daemon=True,
+    )
+    thread.start()
+
+    _update_job(
+        job_id,
+        status=JobStatus.PROCESSING,
+        stage="初始化",
+        progress_percent=0,
+        message="任务已创建，开始分析...",
+    )
+
+    return JobInfo(
+        job_id=job_id,
+        status=JobStatus.PROCESSING,
+        filename=filename,
+        duration_seconds=video_info.duration_seconds,
+        resolution=video_info.resolution,
+        fps=video_info.fps,
+        created_at=job_data["created_at"].isoformat(),
+    )
+
+
+@app.get("/api/status/{job_id}")
+async def get_job_status(job_id: str):
+    """查询任务状态"""
+    job = _jobs_store.get(job_id)
+    if not job:
+        # 尝试从磁盘加载
+        meta = _load_job_meta(job_id)
+        if not meta:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        job = meta
+
+    # 构建下载 URL
+    report_url = None
+    zip_url = None
+    if job.get("status") == JobStatus.COMPLETED or (
+        isinstance(job.get("status"), str) and job.get("status") == "completed"
+    ):
+        if job.get("report_path"):
+            report_url = f"/api/download/{job_id}/report"
+        if job.get("screenshots_zip_path"):
+            zip_url = f"/api/download/{job_id}/screenshots"
+
+    return {
+        "job_id": job.get("job_id", job_id),
+        "status": job.get("status", "unknown"),
+        "filename": job.get("filename", ""),
+        "duration_seconds": job.get("duration_seconds"),
+        "resolution": job.get("resolution"),
+        "fps": job.get("fps"),
+        "risk_count": job.get("risk_count"),
+        "report_url": report_url,
+        "screenshots_zip_url": zip_url,
+        "stage": job.get("stage", ""),
+        "progress_percent": job.get("progress_percent", 0),
+        "message": job.get("message", ""),
+        "error_message": job.get("error_message"),
+        "created_at": job.get("created_at", ""),
+    }
+
+
+@app.get("/api/download/{job_id}/report")
+async def download_report(job_id: str):
+    """下载 Word 报告"""
+    job = _jobs_store.get(job_id)
+    if not job:
+        job = _load_job_meta(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    report_path = job.get("report_path")
+    if not report_path or not os.path.exists(report_path):
+        raise HTTPException(status_code=404, detail="报告文件不存在")
+
+    original_filename = job.get("original_filename", "video")
+    base_name = os.path.splitext(original_filename)[0]
+    download_name = f"{base_name}_风险分析报告.docx"
+
+    return FileResponse(
+        path=report_path,
+        filename=download_name,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+@app.get("/api/download/{job_id}/screenshots")
+async def download_screenshots(job_id: str):
+    """下载截图 ZIP"""
+    job = _jobs_store.get(job_id)
+    if not job:
+        job = _load_job_meta(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    zip_path = job.get("screenshots_zip_path")
+    if not zip_path or not os.path.exists(zip_path):
+        raise HTTPException(status_code=404, detail="截图文件不存在")
+
+    original_filename = job.get("original_filename", "video")
+    base_name = os.path.splitext(original_filename)[0]
+    download_name = f"{base_name}_风险截图.zip"
+
+    return FileResponse(
+        path=zip_path,
+        filename=download_name,
+        media_type="application/zip",
+    )
+
+
+@app.post("/api/cleanup")
+async def trigger_cleanup():
+    """手动触发清理旧任务"""
+    count = cleanup_old_jobs(config.DATA_DIR, config.CLEANUP_HOURS)
+    return {"cleaned_jobs": count, "max_age_hours": config.CLEANUP_HOURS}
+
+
+# ==================== 前端页面 ====================
+
+# 获取 web 目录的绝对路径
+WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_index():
+    """服务首页"""
+    index_path = os.path.join(WEB_DIR, "index.html")
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    return HTMLResponse("<h1>index.html 未找到</h1>", status_code=404)
+
+
+# ==================== 启动时清理 ====================
+
+@app.on_event("startup")
+async def startup_cleanup():
+    """启动时清理过期任务"""
+    mock_mode = config.get_mock_mode()
+    missing = config.get_missing_keys()
+    if mock_mode:
+        print(f"[MOCK] WARNING: Mock mode active (missing: {', '.join(missing)})")
+        print(f"[MOCK]     Results are simulated data for testing only")
+    else:
+        print(f"[INFO] 所有 API Key 已配置，正式模式运行中")
+
+    count = cleanup_old_jobs(config.DATA_DIR, config.CLEANUP_HOURS)
+    if count > 0:
+        print(f"[CLEANUP] 启动时清理了 {count} 个过期任务目录")
+
+
+# ==================== 入口 ====================
+
+if __name__ == "__main__":
+    import uvicorn
+    mock_mode = config.get_mock_mode()
+    if mock_mode:
+        print("=" * 60)
+        print("  [WARN] Mock mode active")
+        print(f"  Missing: {', '.join(config.get_missing_keys())}")
+        print("  Results are simulated data for testing only")
+        print("  Configure API keys in .env and restart for real AI analysis")
+        print("=" * 60)
+    else:
+        print("=" * 60)
+        print("  All API keys configured, production mode")
+        print("=" * 60)
+
+    uvicorn.run(
+        "app.main:app",
+        host=config.HOST,
+        port=config.PORT,
+        reload=True,
+    )

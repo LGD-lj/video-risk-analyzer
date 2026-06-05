@@ -1,0 +1,20 @@
+{
+  "job_id": "d90fc393a017",
+  "status": "completed",
+  "filename": "1acbd9a35b4c74e3b0e8df5e10c17f50.mp4",
+  "original_filename": "1acbd9a35b4c74e3b0e8df5e10c17f50.mp4",
+  "duration_seconds": 10.837958,
+  "resolution": "720x1280",
+  "fps": 30.0,
+  "total_frames": null,
+  "risk_count": 1,
+  "report_url": null,
+  "screenshots_zip_url": null,
+  "error_message": null,
+  "stage": "完成",
+  "progress_percent": 100,
+  "message": "分析完成",
+  "created_at": "2026-06-05T17:28:13.232466",
+  "report_path": "data/jobs\\d90fc393a017\\风险分析报告.docx",
+  "screenshots_zip_path": "data/jobs\\d90fc393a017\\screenshots.zip"
+}
