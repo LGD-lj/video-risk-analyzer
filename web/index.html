@@ -303,6 +303,18 @@
                 <input type="text" id="userNotesInput" placeholder="例如：限高、施工、窄路">
             </div>
 
+            <div class="optional-input hidden" id="tokenArea">
+                <label>🔑 访问口令 <span style="color:#ef4444">*</span></label>
+                <div class="hint">请输入管理员提供的上传口令（浏览器会记住，无需每次输入）</div>
+                <input type="password" id="tokenInput" placeholder="请输入访问口令">
+            </div>
+
+            <div class="optional-input hidden" id="uploaderArea">
+                <label>👤 上传人名称 <span style="color:#666; font-weight:normal">(可选)</span></label>
+                <div class="hint">用于任务记录，方便后续查找</div>
+                <input type="text" id="uploaderInput" placeholder="例如：张三">
+            </div>
+
             <button class="btn btn-primary hidden" id="uploadBtn" style="margin-top:16px">🚀 开始分析</button>
             <div class="est-time hidden" id="estTime"></div>
         </div>
@@ -354,7 +366,9 @@
             <div class="download-actions">
                 <a class="btn btn-download hidden" id="downloadReport" href="#">📄 下载 Word 报告</a>
                 <a class="btn btn-download hidden" id="downloadZip" href="#">📦 下载截图 ZIP</a>
+                <a class="btn btn-download hidden" id="downloadMuted" href="#">🎬 下载静音视频</a>
             </div>
+            <p id="mutedError" style="margin-top:8px; color:#f87171; font-size:0.85em;" class="hidden"></p>
         </div>
 
         <!-- 错误区 -->
@@ -379,11 +393,29 @@
         const errorCard = document.getElementById('errorCard');
         const userNotesArea = document.getElementById('userNotesArea');
         const userNotesInput = document.getElementById('userNotesInput');
+        const tokenArea = document.getElementById('tokenArea');
+        const tokenInput = document.getElementById('tokenInput');
+        const uploaderArea = document.getElementById('uploaderArea');
+        const uploaderInput = document.getElementById('uploaderInput');
         const estTime = document.getElementById('estTime');
 
         let selectedFile = null;
         let currentJobId = null;
         let pollTimer = null;
+
+        // 从 localStorage 加载上次保存的 token 和上传人名称
+        const savedToken = localStorage.getItem('vra_token') || '';
+        const savedUploader = localStorage.getItem('vra_uploader') || '';
+        if (savedToken) tokenInput.value = savedToken;
+        if (savedUploader) uploaderInput.value = savedUploader;
+
+        // 根据是否配置公网模式决定是否显示口令框
+        fetch('/api/health').then(r => r.json()).then(h => {
+            if (h.public_access) {
+                tokenArea.classList.remove('hidden');
+                tokenInput.required = true;
+            }
+        }).catch(() => {});
 
         // 所有进度阶段的顺序
         const STAGE_ORDER = ['已上传', '视频校验', '抽帧中', '风险识别中', '生成报告中', '已完成'];
@@ -427,6 +459,8 @@
             uploadArea.classList.add('has-file');
             uploadBtn.classList.remove('hidden');
             userNotesArea.classList.remove('hidden');
+            tokenArea.classList.remove('hidden');
+            uploaderArea.classList.remove('hidden');
             estTime.classList.add('hidden');
         }
 
@@ -449,8 +483,18 @@
             formData.append('file', selectedFile);
             // 附加用户关注内容
             const notes = userNotesInput.value.trim();
-            if (notes) {
-                formData.append('user_notes', notes);
+            if (notes) formData.append('user_notes', notes);
+            // 附加 token（保存到 localStorage）
+            const token = tokenInput.value.trim();
+            if (token) {
+                formData.append('token', token);
+                localStorage.setItem('vra_token', token);
+            }
+            // 附加上传人名称
+            const uploader = uploaderInput.value.trim();
+            if (uploader) {
+                formData.append('uploader_name', uploader);
+                localStorage.setItem('vra_uploader', uploader);
             }
 
             try {
@@ -495,7 +539,9 @@
             if (!currentJobId) return;
 
             try {
-                const resp = await fetch(`/api/status/${currentJobId}`);
+                const token = tokenInput.value.trim();
+                const statusUrl = token ? `/api/status/${currentJobId}?token=${encodeURIComponent(token)}` : `/api/status/${currentJobId}`;
+                const resp = await fetch(statusUrl);
                 if (!resp.ok) throw new Error('查询状态失败');
 
                 const job = await resp.json();
@@ -560,14 +606,25 @@
 
             const reportLink = document.getElementById('downloadReport');
             const zipLink = document.getElementById('downloadZip');
+            const mutedLink = document.getElementById('downloadMuted');
+            const mutedError = document.getElementById('mutedError');
 
+            const tokenParam = tokenInput.value.trim() ? '?token=' + encodeURIComponent(tokenInput.value.trim()) : '';
             if (job.report_url) {
-                reportLink.href = job.report_url;
+                reportLink.href = job.report_url + tokenParam;
                 reportLink.classList.remove('hidden');
             }
             if (job.screenshots_zip_url) {
-                zipLink.href = job.screenshots_zip_url;
+                zipLink.href = job.screenshots_zip_url + tokenParam;
                 zipLink.classList.remove('hidden');
+            }
+            if (job.muted_video_url) {
+                mutedLink.href = job.muted_video_url + tokenParam;
+                mutedLink.classList.remove('hidden');
+                mutedError.classList.add('hidden');
+            } else if (job.muted_video_status === 'failed') {
+                mutedError.textContent = '静音视频生成失败，请查看日志。';
+                mutedError.classList.remove('hidden');
             }
 
             // 完成时所有阶段灯亮起

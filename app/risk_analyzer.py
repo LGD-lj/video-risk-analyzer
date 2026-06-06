@@ -49,7 +49,7 @@ _RISK_CLASS_B = {  # 中风险，适量保留
 
 # 每类去重间隔：强风险更短（保留更多），弱风险更长（更激进去重）
 _GAP_A = 25   # A 类：25 秒
-_GAP_B = 45   # B 类：45 秒
+_GAP_B = 35   # B 类：35 秒
 _GAP_C = 60   # C 类：60 秒
 
 # 每类最终输出上限
@@ -58,10 +58,10 @@ _MAX_B = 4    # B 类最多 4 个
 _MAX_C = 1    # C 类最多 1 个
 
 # B 类子类别上限
-_MAX_NON_MOTOR = 3     # 非机动车最多 3 个
-_MAX_TREE_BLOCK = 1    # 树木遮挡最多 1 个
-_MAX_PARKING = 3       # 停车占道最多 3 个
-_MAX_SHOP = 1          # 商铺门口最多 1 个
+_MAX_NON_MOTOR = 4     # 非机动车最多 4 个
+_MAX_TREE_BLOCK = 2    # 树木遮挡最多 2 个
+_MAX_PARKING = 4       # 停车占道最多 4 个
+_MAX_SHOP = 2          # 商铺门口最多 2 个
 
 
 def _risk_class(r: "VisionResult") -> str:
@@ -204,20 +204,28 @@ def _select_top_risks(
 
 
 def _parse_risk_type(risk_type_str: str) -> RiskType:
-    """将字符串风险类型转为枚举"""
+    """将字符串风险类型转为枚举（支持标准类型和旧类型兼容）"""
     mapping = {
-        "施工": RiskType.CONSTRUCTION, "限高": RiskType.HEIGHT_LIMIT,
-        "锥桶": RiskType.CONE_BARREL, "窄路": RiskType.NARROW_ROAD,
-        "闸口": RiskType.GATE, "行人": RiskType.PEDESTRIAN,
-        "非机动车": RiskType.NON_MOTOR_VEHICLE, "货车遮挡": RiskType.TRUCK_BLOCK,
-        "停车占道": RiskType.PARKING_OCCUPY, "低净空": RiskType.LOW_CLEARANCE,
-        "物流装卸区": RiskType.LOGISTICS_ZONE, "出入口密集": RiskType.DENSE_ENTRANCE,
-        "路面异常": RiskType.ROAD_ABNORMAL, "临时导流": RiskType.TEMP_DIVERSION,
-        "桥洞": RiskType.BRIDGE_TUNNEL, "顶棚": RiskType.CANOPY,
-        "会车空间不足": RiskType.NARROW_MEETING, "门岗": RiskType.GUARD_POST,
+        # 标准类型
+        "施工": RiskType.CONSTRUCTION, "修路": RiskType.CONSTRUCTION,
+        "施工围挡": RiskType.CONSTRUCTION_FENCE,
+        "锥桶": RiskType.CONE_BARREL, "临时导流": RiskType.TEMP_DIVERSION,
+        "限高": RiskType.HEIGHT_LIMIT, "低净空": RiskType.LOW_CLEARANCE,
+        "净空核查": RiskType.CLEARANCE_CHECK, "桥洞": RiskType.BRIDGE_TUNNEL,
+        "顶棚": RiskType.CANOPY, "隧道": RiskType.BRIDGE_TUNNEL,
+        "闸口": RiskType.GATE, "门岗": RiskType.GUARD_POST,
         "护栏": RiskType.GUARDRAIL, "隔离墩": RiskType.BARRIER,
-        "视线遮挡": RiskType.SIGHT_BLOCKED, "商铺门口": RiskType.SHOP_ENTRANCE,
-        "车辆低速通过": RiskType.SLOW_PASS,
+        "窄路": RiskType.NARROW_ROAD, "通行空间受限": RiskType.NARROW_MEETING,
+        "非机动车": RiskType.NON_MOTOR_VEHICLE, "非机动车混行": RiskType.NON_MOTOR_VEHICLE,
+        "行人": RiskType.PEDESTRIAN, "行人横穿": RiskType.PEDESTRIAN,
+        "停车占道": RiskType.PARKING_OCCUPY,
+        "商铺门口": RiskType.SHOP_ENTRANCE, "出入口密集": RiskType.DENSE_ENTRANCE,
+        "大型车辆遮挡": RiskType.TRUCK_BLOCK, "货车遮挡": RiskType.TRUCK_BLOCK,
+        "货车占道": RiskType.TRUCK_OCCUPY, "工程车占道": RiskType.TRUCK_OCCUPY,
+        "视线遮挡": RiskType.SIGHT_BLOCKED, "路面异常": RiskType.ROAD_ABNORMAL,
+        "物流装卸区": RiskType.LOGISTICS_ZONE, "车辆低速通过": RiskType.SLOW_PASS,
+        # 兜底
+        "其他": RiskType.OTHER, "其他待复核": RiskType.OTHER,
     }
     return mapping.get(risk_type_str, RiskType.OTHER)
 
@@ -375,6 +383,7 @@ def run_analysis(
             "reason": getattr(result, 'reason', ''),
             "long_term_risk": getattr(result, 'long_term_risk', False),
             "long_term_reason": getattr(result, 'long_term_reason', ''),
+            "risk_attribute": getattr(result, 'risk_attribute', '待复核'),
             "screenshot_path": screenshot_path,
         })
 
@@ -402,6 +411,7 @@ def run_analysis(
             timestamp_display=item["timestamp_display"],
             severity=severity,
             risk_types=risk_types_enum,
+            risk_attribute=item.get("risk_attribute", "待复核"),
             description=item["description"],
             screenshot_path=item["screenshot_path"],
         ))

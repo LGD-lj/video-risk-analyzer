@@ -14,9 +14,15 @@ class Config:
     HOST: str = os.getenv("HOST", "127.0.0.1")
     PORT: int = int(os.getenv("PORT", "8000"))
     DATA_DIR: str = os.getenv("DATA_DIR", "data/jobs")
-    MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "2000"))
+    MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "2048"))
     CLEANUP_HOURS: int = int(os.getenv("CLEANUP_HOURS", "24"))
     FAILED_JOB_RETENTION_HOURS: int = int(os.getenv("FAILED_JOB_RETENTION_HOURS", "1"))
+    RESULT_KEEP_HOURS: int = int(os.getenv("RESULT_KEEP_HOURS", "24"))
+
+    # ---------- 公网访问 ----------
+    PUBLIC_ACCESS_ENABLED: bool = os.getenv("PUBLIC_ACCESS_ENABLED", "false").lower() in ("true", "1", "yes")
+    UPLOAD_TOKEN: str = os.getenv("UPLOAD_TOKEN", "")
+    MAX_CONCURRENT_JOBS: int = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
 
     # ---------- 视频处理 ----------
     FRAME_INTERVAL_SECONDS: int = int(os.getenv("FRAME_INTERVAL_SECONDS", "5"))

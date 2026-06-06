@@ -12,30 +12,36 @@ class RiskSeverity(str, Enum):
 
 
 class RiskType(str, Enum):
+    # A 类：强风险
     CONSTRUCTION = "施工"
-    HEIGHT_LIMIT = "限高"
+    CONSTRUCTION_FENCE = "施工围挡"
     CONE_BARREL = "锥桶"
-    NARROW_ROAD = "窄路"
-    GATE = "闸口"
-    PEDESTRIAN = "行人"
-    NON_MOTOR_VEHICLE = "非机动车"
-    TRUCK_BLOCK = "货车遮挡"
-    PARKING_OCCUPY = "停车占道"
-    LOW_CLEARANCE = "低净空"
-    LOGISTICS_ZONE = "物流装卸区"
-    DENSE_ENTRANCE = "出入口密集"
-    ROAD_ABNORMAL = "路面异常"
     TEMP_DIVERSION = "临时导流"
+    HEIGHT_LIMIT = "限高"
+    LOW_CLEARANCE = "低净空"
+    CLEARANCE_CHECK = "净空核查"
     BRIDGE_TUNNEL = "桥洞"
     CANOPY = "顶棚"
-    NARROW_MEETING = "会车空间不足"
+    GATE = "闸口"
     GUARD_POST = "门岗"
     GUARDRAIL = "护栏"
     BARRIER = "隔离墩"
-    SIGHT_BLOCKED = "视线遮挡"
+    NARROW_ROAD = "窄路"
+    NARROW_MEETING = "通行空间受限"
+    ROAD_ABNORMAL = "路面异常"
+    TRUCK_BLOCK = "大型车辆遮挡"
+    TRUCK_OCCUPY = "货车占道"
+    # B 类：中风险
+    NON_MOTOR_VEHICLE = "非机动车混行"
+    PEDESTRIAN = "行人横穿"
+    PARKING_OCCUPY = "停车占道"
     SHOP_ENTRANCE = "商铺门口"
+    DENSE_ENTRANCE = "出入口密集"
+    SIGHT_BLOCKED = "视线遮挡"
+    LOGISTICS_ZONE = "物流装卸区"
     SLOW_PASS = "车辆低速通过"
-    OTHER = "其他"
+    # 兜底
+    OTHER = "其他待复核"
 
 
 class RiskPoint(BaseModel):
@@ -44,6 +50,7 @@ class RiskPoint(BaseModel):
     timestamp_display: str = Field(description="格式化的时间点，如 00:20:35")
     severity: RiskSeverity = Field(description="风险等级：高/中/低")
     risk_types: list[RiskType] = Field(description="风险类型列表")
+    risk_attribute: str = Field(default="待复核", description="风险属性：长期/阶段性风险、临时/动态风险、待复核")
     description: str = Field(description="风险描述")
     screenshot_path: str = Field(description="截图文件路径")
 
@@ -98,6 +105,7 @@ class VisionResult(BaseModel):
     description: str = ""
     long_term_risk: bool = False  # 是否长期风险
     long_term_reason: str = ""  # 长期风险判断原因
+    risk_attribute: str = "待复核"  # 长期/阶段性风险 | 临时/动态风险 | 待复核
 
 
 class TaskProgress(BaseModel):

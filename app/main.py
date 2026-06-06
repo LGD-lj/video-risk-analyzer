@@ -8,14 +8,14 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import config
 from .models import JobInfo, JobStatus, TaskProgress
-from .video_utils import get_video_info, format_duration_display, estimate_processing_time
+from .video_utils import get_video_info, format_duration_display, estimate_processing_time, create_muted_video
 from .risk_analyzer import run_analysis
 from .cleanup import cleanup_old_jobs
 
@@ -45,6 +45,30 @@ _jobs_store: dict[str, dict] = {}
 # 任务状态文件目录
 JOBS_META_DIR = os.path.join(config.DATA_DIR, "_meta")
 os.makedirs(JOBS_META_DIR, exist_ok=True)
+
+# 并发控制锁
+_job_lock = threading.Lock()
+_active_job_count = 0
+
+
+def _require_token(token: str = "") -> None:
+    """校验访问口令（公网模式下强制）"""
+    if not config.PUBLIC_ACCESS_ENABLED:
+        return  # 本地模式不需要 token
+    if not config.UPLOAD_TOKEN:
+        raise HTTPException(status_code=503, detail="服务未配置 UPLOAD_TOKEN，请联系管理员")
+    if token != config.UPLOAD_TOKEN:
+        raise HTTPException(status_code=403, detail="访问口令错误，请输入正确的 UPLOAD_TOKEN")
+
+
+def _check_concurrent_limit() -> None:
+    """检查并发任务上限"""
+    global _active_job_count
+    if _active_job_count >= config.MAX_CONCURRENT_JOBS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"当前有任务正在处理中，请等待完成后再上传（最大并发: {config.MAX_CONCURRENT_JOBS}）"
+        )
 
 
 def _save_job_meta(job_id: str, data: dict):
@@ -108,6 +132,9 @@ def _update_job(
 
 def _run_analysis_background(job_id: str, video_path: str, job_dir: str, user_notes: str = ""):
     """后台线程执行分析"""
+    global _active_job_count
+    with _job_lock:
+        _active_job_count += 1
     try:
         def progress_callback(stage: str, percent: int, message: str = ""):
             _update_job(
@@ -126,6 +153,15 @@ def _run_analysis_background(job_id: str, video_path: str, job_dir: str, user_no
             user_notes=user_notes,
         )
 
+        # ---------- Step 11: 生成静音视频 ----------
+        muted_result = {"success": False, "path": "", "size_bytes": 0, "has_audio": True, "error": ""}
+        try:
+            muted_path = os.path.join(job_dir, "muted_video.mp4")
+            muted_result = create_muted_video(video_path, muted_path)
+        except Exception as e:
+            muted_result["error"] = str(e)
+            print(f"[MUTED] 静音视频生成异常: {e}")
+
         # ---------- 成功后清理 ----------
         _cleanup_job_files(job_id, job_dir, video_path)
 
@@ -139,6 +175,11 @@ def _run_analysis_background(job_id: str, video_path: str, job_dir: str, user_no
             report_path=report_path,
             screenshots_zip_path=zip_path,
             video_path=None,  # 原始视频已删除
+            muted_video_path=muted_result.get("path", ""),
+            muted_video_status="success" if muted_result.get("success") else "failed",
+            muted_video_size=muted_result.get("size_bytes", 0),
+            muted_video_has_audio=muted_result.get("has_audio", True),
+            muted_video_error=muted_result.get("error", ""),
         )
 
     except Exception as e:
@@ -154,6 +195,9 @@ def _run_analysis_background(job_id: str, video_path: str, job_dir: str, user_no
             error_message=error_detail,
             failed_at=datetime.now().isoformat(),
         )
+    finally:
+        with _job_lock:
+            _active_job_count -= 1
 
 
 def _cleanup_job_files(job_id: str, job_dir: str, video_path: str = None):
@@ -193,6 +237,9 @@ async def health_check():
         "version": "1.0.0",
         "mock_mode": mock_mode,
         "missing_keys": missing_keys,
+        "public_access": config.PUBLIC_ACCESS_ENABLED,
+        "active_jobs": _active_job_count,
+        "max_concurrent_jobs": config.MAX_CONCURRENT_JOBS,
         "warning": "Mock 模式已启用，AI 分析结果仅为模拟数据。请配置 API Key 后重启服务。" if mock_mode else None,
     }
 
@@ -201,10 +248,16 @@ async def health_check():
 async def upload_video(
     file: UploadFile = File(...),
     user_notes: str = Form(""),
+    token: str = Form(""),
+    uploader_name: str = Form(""),
 ):
     """上传视频文件，创建分析任务"""
-    # 检查是否有任何 API Key 配置（至少视觉模型要可用）
-    # Mock 模式下也可以运行
+    # Token 校验（公网模式）
+    _require_token(token)
+
+    # 并发限制
+    _check_concurrent_limit()
+
     mock_mode = config.get_mock_mode()
     if mock_mode:
         print(f"[INFO] Mock mode active, missing keys: {config.get_missing_keys()}")
@@ -277,6 +330,10 @@ async def upload_video(
         "started_at": started_at,
         "estimated_time": estimated_time,
         "user_notes": user_notes.strip() if user_notes else "",
+        "uploader_name": uploader_name.strip() if uploader_name else "",
+        "public_access": config.PUBLIC_ACCESS_ENABLED,
+        "upload_time": started_at.isoformat(),
+        "analysis_mode": config.ANALYSIS_MODE,
         "mock_mode": mock_mode,
         "video_path": video_path,
     }
@@ -306,8 +363,9 @@ async def upload_video(
 
 
 @app.get("/api/status/{job_id}")
-async def get_job_status(job_id: str):
+async def get_job_status(job_id: str, token: str = Query("")):
     """查询任务状态"""
+    _require_token(token)
     job = _jobs_store.get(job_id)
     if not job:
         # 尝试从磁盘加载
@@ -346,13 +404,19 @@ async def get_job_status(job_id: str):
         "estimated_time": job.get("estimated_time", ""),
         "eta_seconds": job.get("eta_seconds"),
         "user_notes": job.get("user_notes", ""),
+        "uploader_name": job.get("uploader_name", ""),
+        "public_access": job.get("public_access", False),
         "mock_mode": job.get("mock_mode", config.get_mock_mode()),
+        "active_jobs": _active_job_count,
+        "muted_video_status": job.get("muted_video_status", ""),
+        "muted_video_url": f"/api/download/{job_id}/muted-video" if job.get("muted_video_status") == "success" else None,
     }
 
 
 @app.get("/api/download/{job_id}/report")
-async def download_report(job_id: str):
+async def download_report(job_id: str, token: str = Query("")):
     """下载 Word 报告"""
+    _require_token(token)
     job = _jobs_store.get(job_id)
     if not job:
         job = _load_job_meta(job_id)
@@ -375,8 +439,9 @@ async def download_report(job_id: str):
 
 
 @app.get("/api/download/{job_id}/screenshots")
-async def download_screenshots(job_id: str):
+async def download_screenshots(job_id: str, token: str = Query("")):
     """下载截图 ZIP"""
+    _require_token(token)
     job = _jobs_store.get(job_id)
     if not job:
         job = _load_job_meta(job_id)
@@ -395,6 +460,31 @@ async def download_screenshots(job_id: str):
         path=zip_path,
         filename=download_name,
         media_type="application/zip",
+    )
+
+
+@app.get("/api/download/{job_id}/muted-video")
+async def download_muted_video(job_id: str, token: str = Query("")):
+    """下载静音视频"""
+    _require_token(token)
+    job = _jobs_store.get(job_id)
+    if not job:
+        job = _load_job_meta(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    muted_path = job.get("muted_video_path", "")
+    if not muted_path or not os.path.exists(muted_path):
+        raise HTTPException(status_code=404, detail="静音视频不存在或生成失败")
+
+    original_filename = job.get("original_filename", "video")
+    base_name = os.path.splitext(original_filename)[0]
+    download_name = f"{base_name}_静音视频.mp4"
+
+    return FileResponse(
+        path=muted_path,
+        filename=download_name,
+        media_type="video/mp4",
     )
 
 

@@ -211,3 +211,72 @@ def save_risk_screenshot(
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cv2.imwrite(output_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
     return output_path
+
+
+def create_muted_video(input_path: str, output_path: str) -> dict:
+    """生成去除音频的静音视频
+
+    优先使用 copy 模式（无损快速），失败则 fallback 到重新编码。
+
+    返回: {"success": bool, "path": str, "size_bytes": int, "has_audio": bool, "error": str}
+    """
+    result = {"success": False, "path": output_path, "size_bytes": 0, "has_audio": False, "error": ""}
+
+    # --- 方式1: copy 模式（无损快速）---
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-c:v", "copy",
+        "-an",
+        output_path,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    copy_ok = proc.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0
+
+    # --- 方式2: 重新编码 fallback ---
+    if not copy_ok:
+        print(f"[MUTED] copy mode failed, trying re-encode...")
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-an",
+            output_path,
+        ]
+        subprocess.run(cmd, capture_output=True, text=True)
+
+    # --- 校验 ---
+    if not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
+        result["error"] = f"ffmpeg 生成失败 (copy_ok={copy_ok})"
+        return result
+
+    result["size_bytes"] = os.path.getsize(output_path)
+
+    # ffprobe 检查音频流
+    probe_cmd = [
+        "ffprobe", "-v", "quiet",
+        "-print_format", "json",
+        "-show_streams",
+        output_path,
+    ]
+    probe = subprocess.run(probe_cmd, capture_output=True, text=True)
+    has_audio = False
+    if probe.returncode == 0:
+        try:
+            import json
+            data = json.loads(probe.stdout)
+            for stream in data.get("streams", []):
+                if stream.get("codec_type") == "audio":
+                    has_audio = True
+                    break
+        except Exception:
+            pass
+
+    result["has_audio"] = has_audio
+    if has_audio:
+        result["error"] = "静音视频仍包含音频流"
+        return result
+
+    result["success"] = True
+    print(f"[MUTED] 静音视频生成成功: {output_path} ({result['size_bytes']} bytes, audio=0)")
+    return result

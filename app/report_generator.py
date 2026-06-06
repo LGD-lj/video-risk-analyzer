@@ -122,11 +122,11 @@ def generate_word_report(
     p.runs[0].font.size = Pt(11)
 
     # 汇总表
-    summary_table = doc.add_table(rows=len(risk_points) + 1, cols=4, style="Light Grid Accent 1")
+    summary_table = doc.add_table(rows=len(risk_points) + 1, cols=5, style="Light Grid Accent 1")
     summary_table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
     # 表头
-    headers = ["序号", "时间点", "风险等级", "风险类型"]
+    headers = ["序号", "时间点", "风险等级", "风险类型", "风险属性"]
     for j, header in enumerate(headers):
         cell = summary_table.rows[0].cells[j]
         cell.text = header
@@ -142,6 +142,9 @@ def generate_word_report(
         row.cells[1].text = rp.timestamp_display
         row.cells[2].text = rp.severity.value
         row.cells[3].text = "、".join([rt.value for rt in rp.risk_types])
+        # 风险属性
+        attr = getattr(rp, 'risk_attribute', '待复核') or '待复核'
+        row.cells[4].text = attr
 
         # 风险等级着色
         color = _severity_color(rp.severity.value)
@@ -178,13 +181,14 @@ def generate_word_report(
         doc.add_heading(heading_text, level=2)
 
         # 详情表
-        detail_table = doc.add_table(rows=4, cols=2, style="Light Grid Accent 1")
+        detail_table = doc.add_table(rows=5, cols=2, style="Light Grid Accent 1")
         detail_table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
         detail_data = [
             ("时间点", rp.timestamp_display),
             ("风险等级", rp.severity.value),
             ("风险类型", "、".join([rt.value for rt in rp.risk_types])),
+            ("风险属性", getattr(rp, 'risk_attribute', '待复核') or '待复核'),
             ("风险描述", rp.description),
         ]
 
