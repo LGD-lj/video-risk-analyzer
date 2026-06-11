@@ -410,7 +410,7 @@
         if (savedUploader) uploaderInput.value = savedUploader;
 
         // 根据是否配置公网模式决定是否显示口令框
-        fetch('/api/health').then(r => r.json()).then(h => {
+        fetch('api/health').then(r => r.json()).then(h => {
             if (h.public_access) {
                 tokenArea.classList.remove('hidden');
                 tokenInput.required = true;
@@ -498,7 +498,7 @@
             }
 
             try {
-                const resp = await fetch('/api/upload', {
+                const resp = await fetch('api/upload', {
                     method: 'POST',
                     body: formData,
                 });
@@ -547,7 +547,7 @@
 
             try {
                 const token = tokenInput.value.trim();
-                const statusUrl = token ? `/api/status/${currentJobId}?token=${encodeURIComponent(token)}` : `/api/status/${currentJobId}`;
+                const statusUrl = token ? `api/status/${currentJobId}?token=${encodeURIComponent(token)}` : `api/status/${currentJobId}`;
                 const resp = await fetch(statusUrl);
                 if (!resp.ok) throw new Error('查询状态失败');
 
@@ -620,15 +620,15 @@
 
             const tokenParam = tokenInput.value.trim() ? '?token=' + encodeURIComponent(tokenInput.value.trim()) : '';
             if (job.report_url) {
-                reportLink.href = job.report_url + tokenParam;
+                reportLink.href = (job.report_url.startsWith('/') ? job.report_url.slice(1) : job.report_url) + tokenParam;
                 reportLink.classList.remove('hidden');
             }
             if (job.screenshots_zip_url) {
-                zipLink.href = job.screenshots_zip_url + tokenParam;
+                zipLink.href = (job.screenshots_zip_url.startsWith('/') ? job.screenshots_zip_url.slice(1) : job.screenshots_zip_url) + tokenParam;
                 zipLink.classList.remove('hidden');
             }
             if (job.muted_video_url) {
-                mutedLink.href = job.muted_video_url + tokenParam;
+                mutedLink.href = (job.muted_video_url.startsWith('/') ? job.muted_video_url.slice(1) : job.muted_video_url) + tokenParam;
                 mutedLink.classList.remove('hidden');
                 mutedError.classList.add('hidden');
             } else if (job.muted_video_status === 'failed') {
