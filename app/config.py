@@ -14,7 +14,7 @@ class Config:
     HOST: str = os.getenv("HOST", "127.0.0.1")
     PORT: int = int(os.getenv("PORT", "8000"))
     DATA_DIR: str = os.getenv("DATA_DIR", "data/jobs")
-    MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "2048"))
+    MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "8192"))
     CLEANUP_HOURS: int = int(os.getenv("CLEANUP_HOURS", "24"))
     FAILED_JOB_RETENTION_HOURS: int = int(os.getenv("FAILED_JOB_RETENTION_HOURS", "1"))
     RESULT_KEEP_HOURS: int = int(os.getenv("RESULT_KEEP_HOURS", "24"))
