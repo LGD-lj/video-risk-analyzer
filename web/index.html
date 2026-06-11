@@ -504,11 +504,21 @@
                 });
 
                 if (!resp.ok) {
-                    const err = await resp.json();
-                    throw new Error(err.detail || '上传失败');
+                    let detail = '上传失败';
+                    try {
+                        const err = await resp.json();
+                        detail = err.detail || detail;
+                    } catch (e) {
+                        const text = await resp.text();
+                        detail = resp.status === 413 ? '文件过大，超过上传限制' :
+                                resp.status === 502 ? '服务器繁忙，请稍后重试' :
+                                `服务器错误 (${resp.status}): ${text.substring(0, 100)}`;
+                    }
+                    throw new Error(detail);
                 }
 
-                const job = await resp.json();
+                let job;
+                try { job = await resp.json(); } catch (e) { throw new Error('服务器响应异常，请刷新重试'); }
                 currentJobId = job.job_id;
 
                 // 更新进度区
@@ -544,7 +554,8 @@
                 const resp = await fetch(statusUrl);
                 if (!resp.ok) throw new Error('查询状态失败');
 
-                const job = await resp.json();
+                let job;
+                try { job = await resp.json(); } catch (e) { return; } // 非JSON跳过本次
                 updateProgress(job);
 
                 if (job.status === 'completed') {
