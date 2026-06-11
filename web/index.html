@@ -505,14 +505,11 @@
 
                 if (!resp.ok) {
                     let detail = '上传失败';
-                    try {
-                        const err = await resp.json();
-                        detail = err.detail || detail;
-                    } catch (e) {
-                        const text = await resp.text();
-                        detail = resp.status === 413 ? '文件过大，超过上传限制' :
-                                resp.status === 502 ? '服务器繁忙，请稍后重试' :
-                                `服务器错误 (${resp.status}): ${text.substring(0, 100)}`;
+                    const body = await resp.text();
+                    if (resp.status === 413) detail = '文件过大，超过上传限制';
+                    else if (resp.status === 502 || resp.status === 503) detail = '服务器繁忙，请稍后重试';
+                    else {
+                        try { detail = JSON.parse(body).detail || detail; } catch (e) {}
                     }
                     throw new Error(detail);
                 }
