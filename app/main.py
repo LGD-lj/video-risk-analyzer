@@ -186,13 +186,17 @@ def _run_analysis_background(job_id: str, video_path: str, job_dir: str, user_no
         import traceback
         error_detail = f"{str(e)}\n{traceback.format_exc()}"
         print(f"[ERROR] 任务 {job_id} 失败: {error_detail}")
+        # 提取用户可读的错误原因（去掉技术性 traceback）
+        user_msg = str(e)
+        if len(user_msg) > 200:
+            user_msg = user_msg[:200] + "..."
         _update_job(
             job_id,
             status=JobStatus.FAILED,
             stage="错误",
             progress_percent=0,
-            message=str(e),
-            error_message=error_detail,
+            message=user_msg,
+            error_message=user_msg,  # 用简短版本，不要 traceback
             failed_at=datetime.now().isoformat(),
         )
     finally:

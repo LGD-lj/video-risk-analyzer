@@ -552,7 +552,8 @@
                     showResult(job);
                 } else if (job.status === 'failed') {
                     clearInterval(pollTimer);
-                    showError(job.error_message || '分析失败');
+                    const errMsg = job.error_message || job.message || '分析失败，请重试或联系管理员。';
+                    showError(errMsg);
                 }
             } catch (err) {
                 console.error('轮询错误:', err);
